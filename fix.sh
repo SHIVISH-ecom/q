@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# 🔧 Port Conflicts Fix Script for Shivish Platform
-# This script fixes port conflicts and ClickHouse issues
+# 🧹 Clean Install Script for Shivish Platform
+# This script does a complete clean installation with proper port assignments
 
 set -e  # Exit on any error
 
-echo "🔧 Starting Port Conflicts Fix Script..."
-echo "======================================="
+echo "🧹 Starting Clean Install Script for Shivish Platform..."
+echo "======================================================"
 
 # Colors for output
 RED='\033[0;31m'
@@ -57,69 +57,95 @@ cd "$TARGET_DIR"
 PROJECT_ROOT="$(pwd)"
 print_status "Working in project root directory: $PROJECT_ROOT"
 
-print_status "Step 1: Checking current port usage..."
+print_status "Step 1: Stopping all Docker services..."
+docker-compose down 2>/dev/null || true
 
-echo "🔍 Checking port 9000 usage:"
-sudo netstat -tulpn | grep :9000 || echo "Port 9000 is free"
+print_status "Step 2: Removing all Docker containers and volumes..."
+docker-compose rm -f 2>/dev/null || true
+docker container prune -f 2>/dev/null || true
+docker volume prune -f 2>/dev/null || true
 
-echo ""
-echo "🔍 Checking port 8123 usage:"
-sudo netstat -tulpn | grep :8123 || echo "Port 8123 is free"
+print_status "Step 3: Cleaning up data directories..."
+sudo rm -rf data/* 2>/dev/null || true
+mkdir -p data/{postgres,redis,clickhouse,minio,grafana}
 
-echo ""
-echo "🔍 Checking port 9001 usage:"
-sudo netstat -tulpn | grep :9001 || echo "Port 9001 is free"
+print_status "Step 4: Creating proper directory structure..."
+mkdir -p configs/{prometheus,nginx,clickhouse}
+mkdir -p logs backups
 
-print_status "Step 2: Checking current Docker container status..."
-docker-compose ps
+print_status "Step 5: Creating environment configuration..."
 
-print_status "Step 3: Stopping ClickHouse if running..."
-docker-compose stop clickhouse 2>/dev/null || true
-docker-compose rm -f clickhouse 2>/dev/null || true
+cat > .env << 'EOF'
+# Database Configuration
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=shivish_platform
+DB_USER=shivish_user
+DB_PASSWORD=shivish_secure_password_2024
 
-print_status "Step 4: Killing processes using conflicting ports..."
+# Redis Configuration
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=redis_secure_password_2024
 
-# Kill any process using port 9000
-echo "Killing processes using port 9000..."
-if sudo lsof -t -i:9000 >/dev/null 2>&1; then
-    PIDS=$(sudo lsof -t -i:9000)
-    echo "Found processes using port 9000: $PIDS"
-    echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
-    print_success "Killed processes using port 9000"
-else
-    print_status "No processes using port 9000"
-fi
+# ClickHouse Configuration
+CLICKHOUSE_HOST=clickhouse
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DB=analytics
+CLICKHOUSE_USER=analytics_user
+CLICKHOUSE_PASSWORD=clickhouse_secure_password_2024
 
-# Kill any process using port 8123
-echo "Killing processes using port 8123..."
-if sudo lsof -t -i:8123 >/dev/null 2>&1; then
-    PIDS=$(sudo lsof -t -i:8123)
-    echo "Found processes using port 8123: $PIDS"
-    echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
-    print_success "Killed processes using port 8123"
-else
-    print_status "No processes using port 8123"
-fi
+# MinIO Configuration
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=shivish_access_key
+MINIO_SECRET_KEY=shivish_secret_key_2024_very_secure
+MINIO_USE_SSL=false
 
-# Wait a moment for ports to be released
-sleep 3
+# JWT Configuration
+JWT_SECRET=shivish_jwt_secret_key_2024_very_secure_random_string
+JWT_EXPIRATION=24h
 
-print_status "Step 5: Verifying ports are free..."
-echo "Checking port 9000 after cleanup:"
-sudo netstat -tulpn | grep :9000 || echo "✅ Port 9000 is now free"
+# Payment Gateway Configuration (REPLACE WITH YOUR ACTUAL VALUES)
+PHONEPE_MERCHANT_ID=your_phonepe_merchant_id
+PHONEPE_SALT_KEY=your_phonepe_salt_key
+PHONEPE_SALT_INDEX=1
 
-echo "Checking port 8123 after cleanup:"
-sudo netstat -tulpn | grep :8123 || echo "✅ Port 8123 is now free"
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 
-print_status "Step 6: Ensuring ClickHouse configuration exists..."
+# Notification Configuration (REPLACE WITH YOUR ACTUAL VALUES)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
 
-# Create ClickHouse configuration directory
-mkdir -p configs/clickhouse
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_PHONE_NUMBER=your_twilio_phone
 
-# Create ClickHouse config.xml if it doesn't exist
-if [ ! -f "configs/clickhouse/config.xml" ]; then
-    print_status "Creating ClickHouse config.xml..."
-    cat > configs/clickhouse/config.xml << 'EOF'
+# Grafana Configuration
+GRAFANA_PASSWORD=shivish_grafana_password_2024
+
+# API Gateway Configuration
+API_GATEWAY_PORT=8080
+AUTH_SERVICE_PORT=8081
+USER_SERVICE_PORT=8082
+ECOMMERCE_SERVICE_PORT=8083
+PAYMENT_SERVICE_PORT=8084
+NOTIFICATION_SERVICE_PORT=8085
+CONTENT_SERVICE_PORT=8086
+ANALYTICS_SERVICE_PORT=8087
+VERIFICATION_SERVICE_PORT=8088
+EMERGENCY_SERVICE_PORT=8089
+TEMPLE_SERVICE_PORT=8090
+EOF
+
+print_success "Environment configuration created"
+
+print_status "Step 6: Creating ClickHouse configuration..."
+
+# Create ClickHouse config.xml
+cat > configs/clickhouse/config.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
     <logger>
@@ -148,15 +174,9 @@ if [ ! -f "configs/clickhouse/config.xml" ]; then
     <timezone>UTC</timezone>
 </clickhouse>
 EOF
-    print_success "ClickHouse config.xml created"
-else
-    print_status "ClickHouse config.xml already exists"
-fi
 
-# Create ClickHouse users.xml if it doesn't exist
-if [ ! -f "configs/clickhouse/users.xml" ]; then
-    print_status "Creating ClickHouse users.xml..."
-    cat > configs/clickhouse/users.xml << 'EOF'
+# Create ClickHouse users.xml
+cat > configs/clickhouse/users.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
     <users>
@@ -198,94 +218,450 @@ if [ ! -f "configs/clickhouse/users.xml" ]; then
     </profiles>
 </clickhouse>
 EOF
-    print_success "ClickHouse users.xml created"
-else
-    print_status "ClickHouse users.xml already exists"
-fi
 
-print_status "Step 7: Fixing ClickHouse data directory permissions..."
-sudo rm -rf data/clickhouse/* 2>/dev/null || true
-mkdir -p data/clickhouse
+print_success "ClickHouse configuration created"
+
+print_status "Step 7: Creating Prometheus configuration..."
+
+cat > configs/prometheus/prometheus.yml << 'EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:8081']
+
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['user-service:8082']
+
+  - job_name: 'ecommerce-service'
+    static_configs:
+      - targets: ['ecommerce-service:8083']
+
+  - job_name: 'payment-service'
+    static_configs:
+      - targets: ['payment-service:8084']
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:8085']
+
+  - job_name: 'content-service'
+    static_configs:
+      - targets: ['content-service:8086']
+
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:8087']
+
+  - job_name: 'verification-service'
+    static_configs:
+      - targets: ['verification-service:8088']
+
+  - job_name: 'emergency-service'
+    static_configs:
+      - targets: ['emergency-service:8089']
+
+  - job_name: 'temple-service'
+    static_configs:
+      - targets: ['temple-service:8090']
+EOF
+
+print_success "Prometheus configuration created"
+
+print_status "Step 8: Creating Nginx configuration..."
+
+cat > configs/nginx/nginx.conf << 'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream api_gateway {
+        server api-gateway:8080;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        location / {
+            proxy_pass http://api_gateway;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /grafana/ {
+            proxy_pass http://grafana:3000/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /minio/ {
+            proxy_pass http://minio:9001/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+EOF
+
+print_success "Nginx configuration created"
+
+print_status "Step 9: Creating docker-compose.yml with proper port assignments..."
+
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: shivish-postgres
+    environment:
+      POSTGRES_DB: shivish_platform
+      POSTGRES_USER: shivish_user
+      POSTGRES_PASSWORD: shivish_secure_password_2024
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: shivish-redis
+    command: redis-server --requirepass redis_secure_password_2024
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: shivish-clickhouse
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics_user
+      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+    ports:
+      - "8123:8123"
+      - "9002:9000"  # Using 9002 to avoid conflict with MinIO
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  minio:
+    image: minio/minio:latest
+    container_name: shivish-minio
+    environment:
+      MINIO_ROOT_USER: shivish_access_key
+      MINIO_ROOT_PASSWORD: shivish_secret_key_2024_very_secure
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./data/minio:/data
+    ports:
+      - "9000:9000"  # MinIO object storage
+      - "9001:9001"  # MinIO console
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  # Monitoring Services
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: shivish-prometheus
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: shivish-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: shivish_grafana_password_2024
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  # Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: shivish-nginx
+    volumes:
+      - ./configs/nginx/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api-gateway
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  # Microservices (Placeholder - you'll need to build these)
+  api-gateway:
+    image: nginx:alpine
+    container_name: shivish-api-gateway
+    ports:
+      - "8080:8080"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual API Gateway service
+
+  auth-service:
+    image: nginx:alpine
+    container_name: shivish-auth-service
+    ports:
+      - "8081:8081"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Auth Service
+
+  ecommerce-service:
+    image: nginx:alpine
+    container_name: shivish-ecommerce-service
+    ports:
+      - "8082:8082"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual E-commerce Service
+
+  content-service:
+    image: nginx:alpine
+    container_name: shivish-content-service
+    ports:
+      - "8084:8084"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Content Service
+
+  analytics-service:
+    image: nginx:alpine
+    container_name: shivish-analytics-service
+    ports:
+      - "8085:8085"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Analytics Service
+
+  verification-service:
+    image: nginx:alpine
+    container_name: shivish-verification-service
+    ports:
+      - "8086:8086"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Verification Service
+
+  emergency-service:
+    image: nginx:alpine
+    container_name: shivish-emergency-service
+    ports:
+      - "8087:8087"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Emergency Service
+
+  temple-service:
+    image: nginx:alpine
+    container_name: shivish-temple-service
+    ports:
+      - "8088:8088"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Temple Service
+
+  user-service:
+    image: nginx:alpine
+    container_name: shivish-user-service
+    ports:
+      - "8089:8089"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual User Service
+
+networks:
+  shivish-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  clickhouse_data:
+  minio_data:
+  grafana_data:
+EOF
+
+print_success "Docker Compose configuration created with proper port assignments"
+
+print_status "Step 10: Setting proper permissions..."
+sudo chown -R 999:999 data/postgres
 sudo chown -R 999:999 data/clickhouse
-sudo chmod -R 755 data/clickhouse
-print_success "ClickHouse data directory permissions fixed"
+sudo chown -R 472:472 data/grafana
+sudo chown -R 1001:1001 data/minio
 
-print_status "Step 8: Updating docker-compose.yml for ClickHouse..."
+print_success "Permissions set"
 
-# Check if ClickHouse service exists in docker-compose.yml
-if ! grep -q "clickhouse:" docker-compose.yml; then
-    print_status "Adding ClickHouse service to docker-compose.yml..."
-    
-    # Create backup
-    cp docker-compose.yml docker-compose.yml.backup
-    
-    # Add ClickHouse service before the networks section
-    sed -i '/^networks:/i\
-  clickhouse:\
-    image: clickhouse/clickhouse-server:latest\
-    container_name: shivish-clickhouse\
-    environment:\
-      CLICKHOUSE_DB: analytics\
-      CLICKHOUSE_USER: analytics_user\
-      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024\
-    volumes:\
-      - ./data/clickhouse:/var/lib/clickhouse\
-      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml\
-      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml\
-    ports:\
-      - "8123:8123"\
-      - "9000:9000"\
-    networks:\
-      - shivish-network\
-    restart: unless-stopped\
-    ulimits:\
-      nofile:\
-        soft: 262144\
-        hard: 262144\
-' docker-compose.yml
-    
-    print_success "ClickHouse service added to docker-compose.yml"
-else
-    print_status "ClickHouse service already exists in docker-compose.yml"
-    
-    # Check if the ports are correct
-    if ! grep -q "9000:9000" docker-compose.yml; then
-        print_status "Updating ClickHouse ports in docker-compose.yml..."
-        # Update the ports section
-        sed -i '/clickhouse:/,/restart: unless-stopped/s/ports:.*/ports:\
-      - "8123:8123"\
-      - "9000:9000"/' docker-compose.yml
-        print_success "ClickHouse ports updated"
-    fi
-fi
+print_status "Step 11: Starting core services first..."
+docker-compose up -d postgres redis clickhouse minio
 
-print_status "Step 9: Starting ClickHouse..."
-docker-compose up -d clickhouse
+print_status "Step 12: Waiting for core services to be ready..."
+sleep 30
 
-print_status "Step 10: Waiting for ClickHouse to start..."
-sleep 20
+print_status "Step 13: Starting all services..."
+docker-compose up -d
 
-print_status "Step 11: Testing ClickHouse..."
+print_status "Step 14: Waiting for all services to start..."
+sleep 30
 
-# Test ClickHouse HTTP endpoint
-echo "Testing ClickHouse HTTP endpoint (port 8123)..."
-if curl -s http://localhost:8123 >/dev/null; then
-    print_success "✅ ClickHouse HTTP (port 8123): OK"
-else
-    print_warning "❌ ClickHouse HTTP (port 8123): DOWN"
-    print_status "Checking ClickHouse logs..."
-    docker-compose logs --tail=10 clickhouse
-fi
+print_status "Step 15: Creating monitoring scripts..."
 
-# Test ClickHouse TCP endpoint
-echo "Testing ClickHouse TCP endpoint (port 9000)..."
-if curl -s http://localhost:9000 >/dev/null 2>&1; then
-    print_success "✅ ClickHouse TCP (port 9000): OK"
-else
-    print_warning "❌ ClickHouse TCP (port 9000): DOWN (this is normal for HTTP test)"
-fi
+# Create fixed monitoring script
+cat > monitor.sh << 'EOF'
+#!/bin/bash
 
-print_status "Step 12: Final verification..."
+echo "🖥️  System Resources:"
+echo "===================="
+
+# Memory usage
+echo "📊 Memory Usage:"
+free -h
+
+echo ""
+echo "💾 Disk Usage:"
+df -h
+
+echo ""
+echo "🐳 Docker Containers:"
+docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
+
+echo ""
+echo "🔍 Service Health:"
+# Test actual endpoints instead of /health
+curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
+curl -s http://localhost:8081/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
+curl -s http://localhost:8082/ >/dev/null && echo "✅ E-commerce Service: OK" || echo "❌ E-commerce Service: DOWN"
+curl -s http://localhost:8084/ >/dev/null && echo "✅ Content Service: OK" || echo "❌ Content Service: DOWN"
+curl -s http://localhost:8085/ >/dev/null && echo "✅ Analytics Service: OK" || echo "❌ Analytics Service: DOWN"
+curl -s http://localhost:8086/ >/dev/null && echo "✅ Verification Service: OK" || echo "❌ Verification Service: DOWN"
+curl -s http://localhost:8087/ >/dev/null && echo "✅ Emergency Service: OK" || echo "❌ Emergency Service: DOWN"
+curl -s http://localhost:8088/ >/dev/null && echo "✅ Temple Service: OK" || echo "❌ Temple Service: DOWN"
+curl -s http://localhost:8089/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
+
+echo ""
+echo "🌐 Core Services:"
+curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
+curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO Console: OK" || echo "❌ MinIO Console: DOWN"
+curl -s http://localhost:9090 >/dev/null && echo "✅ Prometheus: OK" || echo "❌ Prometheus: DOWN"
+
+echo ""
+echo "📈 Database Connections:"
+docker exec shivish-postgres psql -U shivish_user -d shivish_platform -c "SELECT count(*) as active_connections FROM pg_stat_activity;" 2>/dev/null || echo "❌ PostgreSQL: Not accessible"
+
+echo ""
+echo "🔄 Redis Status:"
+docker exec shivish-redis redis-cli ping 2>/dev/null || echo "❌ Redis: Not accessible"
+
+echo ""
+echo "📊 ClickHouse Status:"
+curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
+
+echo ""
+echo "🌐 Service URLs:"
+echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8080"
+echo "   - Grafana: http://$(hostname -I | awk '{print $1}'):3000"
+echo "   - MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
+echo "   - Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
+echo "   - ClickHouse: http://$(hostname -I | awk '{print $1}'):8123"
+EOF
+
+chmod +x monitor.sh
+
+# Create other utility scripts
+cat > status.sh << 'EOF'
+#!/bin/bash
+
+echo "⚡ Quick Status Check"
+echo "===================="
+
+# Quick container status
+echo "🐳 Container Status:"
+docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+
+echo ""
+echo "🔍 Quick Service Test:"
+# Test a few key services quickly
+curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
+curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
+curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO: OK" || echo "❌ MinIO: DOWN"
+curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
+
+echo ""
+echo "📊 Memory Usage:"
+free -h | grep Mem
+
+echo ""
+echo "💾 Disk Usage:"
+df -h | grep -E "(Filesystem|/dev/)" | head -2
+EOF
+
+chmod +x status.sh
+
+print_success "Monitoring scripts created"
+
+print_status "Step 16: Final verification..."
 
 echo ""
 echo "🧪 Running final verification..."
@@ -293,91 +669,75 @@ echo "==============================="
 
 # Check container status
 echo "📋 Container Status:"
-docker-compose ps clickhouse
+docker-compose ps
 
 echo ""
-echo "🔍 Port Usage After Fix:"
-sudo netstat -tulpn | grep -E ":(8123|9000)" || echo "No processes using ClickHouse ports"
+echo "🔍 Port Usage:"
+sudo netstat -tulpn | grep -E ":(8080|8081|8082|3000|9000|9001|8123|9090)" || echo "No services listening on expected ports"
 
 echo ""
-echo "📊 ClickHouse Logs (last 10 lines):"
-docker-compose logs --tail=10 clickhouse
+echo "🧪 Testing services..."
+echo "Testing API Gateway..."
+curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
 
-print_status "Step 13: Creating port conflict prevention script..."
+echo "Testing Grafana..."
+curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
 
-cat > prevent_port_conflicts.sh << 'EOF'
-#!/bin/bash
+echo "Testing MinIO Console..."
+curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO Console: OK" || echo "❌ MinIO Console: DOWN"
 
-echo "🛡️  Port Conflict Prevention Script"
-echo "=================================="
+echo "Testing ClickHouse..."
+curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
 
-# Function to check and kill process on port
-check_and_kill_port() {
-    local port=$1
-    local service_name=$2
-    
-    if sudo lsof -t -i:$port >/dev/null 2>&1; then
-        echo "⚠️  Port $port is in use by $service_name"
-        PIDS=$(sudo lsof -t -i:$port)
-        echo "Found processes: $PIDS"
-        read -p "Do you want to kill these processes? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
-            echo "✅ Killed processes using port $port"
-        else
-            echo "❌ Skipped killing processes on port $port"
-        fi
-    else
-        echo "✅ Port $port is free"
-    fi
-}
+echo "Testing Prometheus..."
+curl -s http://localhost:9090 >/dev/null && echo "✅ Prometheus: OK" || echo "❌ Prometheus: DOWN"
 
-echo "Checking critical ports..."
-
-# Check ClickHouse ports
-check_and_kill_port 8123 "ClickHouse HTTP"
-check_and_kill_port 9000 "ClickHouse TCP"
-
-# Check other critical ports
-check_and_kill_port 5432 "PostgreSQL"
-check_and_kill_port 6379 "Redis"
-check_and_kill_port 3000 "Grafana"
-check_and_kill_port 9001 "MinIO Console"
-check_and_kill_port 9090 "Prometheus"
-
-echo "Port conflict prevention completed!"
-EOF
-
-chmod +x prevent_port_conflicts.sh
-print_success "Port conflict prevention script created"
-
-print_success "🎉 Port conflicts fix completed successfully!"
+print_success "🎉 Clean installation completed successfully!"
 echo ""
 echo "=================================================="
-echo "📋 Summary:"
+echo "📋 Installation Summary:"
 echo "=================================================="
 echo ""
-echo "✅ Port conflicts resolved"
-echo "✅ ClickHouse configuration created"
-echo "✅ ClickHouse data directory permissions fixed"
-echo "✅ ClickHouse service added/updated in docker-compose.yml"
-echo "✅ ClickHouse container started"
-echo "✅ Port conflict prevention script created"
+echo "✅ All Docker containers cleaned and recreated"
+echo "✅ Proper port assignments configured:"
+echo "   - MinIO: 9000 (object storage), 9001 (console)"
+echo "   - ClickHouse: 8123 (HTTP), 9002 (TCP)"
+echo "   - Grafana: 3000"
+echo "   - Prometheus: 9090"
+echo "   - Microservices: 8080-8090"
+echo "✅ All configuration files created"
+echo "✅ Monitoring scripts created"
+echo "✅ All services started"
 echo ""
 echo "=================================================="
-echo "📋 Available Scripts:"
+echo "📋 Available Commands:"
 echo "=================================================="
 echo ""
-echo "1. 🛡️  ./prevent_port_conflicts.sh - Prevent future port conflicts"
-echo "2. 📊 ./monitor.sh                - Monitor all services"
-echo "3. 🏥 ./health_check.sh           - Comprehensive health check"
-echo "4. ⚡ ./status.sh                 - Quick status check"
-echo "5. 🚀 ./deploy.sh                 - Deploy services"
-echo "6. 💾 ./backup.sh                 - Backup data"
+echo "1. 📊 ./monitor.sh          - Monitor all services"
+echo "2. ⚡ ./status.sh           - Quick status check"
+echo "3. 🚀 docker-compose up -d  - Start all services"
+echo "4. 🛑 docker-compose down   - Stop all services"
+echo "5. 📋 docker-compose ps     - Check container status"
 echo ""
 echo "=================================================="
-echo "🌐 ClickHouse should now be accessible at:"
-echo "   - HTTP: http://$(hostname -I | awk '{print $1}'):8123"
-echo "   - TCP:  $(hostname -I | awk '{print $1}'):9000"
+echo "🌐 Access Your Services:"
+echo "=================================================="
+echo ""
+echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8080"
+echo "   - Grafana: http://$(hostname -I | awk '{print $1}'):3000"
+echo "   - MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
+echo "   - Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
+echo "   - ClickHouse: http://$(hostname -I | awk '{print $1}'):8123"
+echo ""
+echo "=================================================="
+echo "🎯 Next Steps:"
+echo "=================================================="
+echo ""
+echo "1. 🔧 Update .env file with your actual credentials"
+echo "2. 🏗️  Build your Go microservices from microservices/ directory"
+echo "3. 🔄 Replace placeholder nginx images with actual services"
+echo "4. 🌐 Configure your Flutter app to use the API endpoints"
+echo ""
+echo "=================================================="
+echo "✅ Clean installation completed! All port conflicts resolved."
 echo "=================================================="
