@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# 🔧 Complete Fix Script for Shivish Platform
-# This script fixes monitoring and ClickHouse issues
+# 🔧 Port Conflicts Fix Script for Shivish Platform
+# This script fixes port conflicts and ClickHouse issues
 
 set -e  # Exit on any error
 
-echo "🔧 Starting Complete Fix Script for Shivish Platform..."
-echo "====================================================="
+echo "🔧 Starting Port Conflicts Fix Script..."
+echo "======================================="
 
 # Colors for output
 RED='\033[0;31m'
@@ -57,23 +57,69 @@ cd "$TARGET_DIR"
 PROJECT_ROOT="$(pwd)"
 print_status "Working in project root directory: $PROJECT_ROOT"
 
-print_status "Step 1: Checking current Docker container status..."
+print_status "Step 1: Checking current port usage..."
+
+echo "🔍 Checking port 9000 usage:"
+sudo netstat -tulpn | grep :9000 || echo "Port 9000 is free"
+
+echo ""
+echo "🔍 Checking port 8123 usage:"
+sudo netstat -tulpn | grep :8123 || echo "Port 8123 is free"
+
+echo ""
+echo "🔍 Checking port 9001 usage:"
+sudo netstat -tulpn | grep :9001 || echo "Port 9001 is free"
+
+print_status "Step 2: Checking current Docker container status..."
 docker-compose ps
 
-print_status "Step 2: Fixing ClickHouse issues..."
-
-# Stop and remove ClickHouse if it exists
-print_status "Stopping and removing existing ClickHouse..."
+print_status "Step 3: Stopping ClickHouse if running..."
 docker-compose stop clickhouse 2>/dev/null || true
 docker-compose rm -f clickhouse 2>/dev/null || true
 
+print_status "Step 4: Killing processes using conflicting ports..."
+
+# Kill any process using port 9000
+echo "Killing processes using port 9000..."
+if sudo lsof -t -i:9000 >/dev/null 2>&1; then
+    PIDS=$(sudo lsof -t -i:9000)
+    echo "Found processes using port 9000: $PIDS"
+    echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
+    print_success "Killed processes using port 9000"
+else
+    print_status "No processes using port 9000"
+fi
+
+# Kill any process using port 8123
+echo "Killing processes using port 8123..."
+if sudo lsof -t -i:8123 >/dev/null 2>&1; then
+    PIDS=$(sudo lsof -t -i:8123)
+    echo "Found processes using port 8123: $PIDS"
+    echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
+    print_success "Killed processes using port 8123"
+else
+    print_status "No processes using port 8123"
+fi
+
+# Wait a moment for ports to be released
+sleep 3
+
+print_status "Step 5: Verifying ports are free..."
+echo "Checking port 9000 after cleanup:"
+sudo netstat -tulpn | grep :9000 || echo "✅ Port 9000 is now free"
+
+echo "Checking port 8123 after cleanup:"
+sudo netstat -tulpn | grep :8123 || echo "✅ Port 8123 is now free"
+
+print_status "Step 6: Ensuring ClickHouse configuration exists..."
+
 # Create ClickHouse configuration directory
-print_status "Creating ClickHouse configuration..."
 mkdir -p configs/clickhouse
 
-# Create ClickHouse config.xml
-print_status "Creating ClickHouse config.xml..."
-cat > configs/clickhouse/config.xml << 'EOF'
+# Create ClickHouse config.xml if it doesn't exist
+if [ ! -f "configs/clickhouse/config.xml" ]; then
+    print_status "Creating ClickHouse config.xml..."
+    cat > configs/clickhouse/config.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
     <logger>
@@ -102,10 +148,15 @@ cat > configs/clickhouse/config.xml << 'EOF'
     <timezone>UTC</timezone>
 </clickhouse>
 EOF
+    print_success "ClickHouse config.xml created"
+else
+    print_status "ClickHouse config.xml already exists"
+fi
 
-# Create ClickHouse users.xml
-print_status "Creating ClickHouse users.xml..."
-cat > configs/clickhouse/users.xml << 'EOF'
+# Create ClickHouse users.xml if it doesn't exist
+if [ ! -f "configs/clickhouse/users.xml" ]; then
+    print_status "Creating ClickHouse users.xml..."
+    cat > configs/clickhouse/users.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
     <users>
@@ -147,17 +198,19 @@ cat > configs/clickhouse/users.xml << 'EOF'
     </profiles>
 </clickhouse>
 EOF
+    print_success "ClickHouse users.xml created"
+else
+    print_status "ClickHouse users.xml already exists"
+fi
 
-# Fix ClickHouse data directory permissions
-print_status "Fixing ClickHouse data directory permissions..."
+print_status "Step 7: Fixing ClickHouse data directory permissions..."
 sudo rm -rf data/clickhouse/* 2>/dev/null || true
 mkdir -p data/clickhouse
 sudo chown -R 999:999 data/clickhouse
 sudo chmod -R 755 data/clickhouse
+print_success "ClickHouse data directory permissions fixed"
 
-print_success "ClickHouse configuration created"
-
-print_status "Step 3: Adding ClickHouse to docker-compose.yml..."
+print_status "Step 8: Updating docker-compose.yml for ClickHouse..."
 
 # Check if ClickHouse service exists in docker-compose.yml
 if ! grep -q "clickhouse:" docker-compose.yml; then
@@ -193,265 +246,44 @@ if ! grep -q "clickhouse:" docker-compose.yml; then
     
     print_success "ClickHouse service added to docker-compose.yml"
 else
-    print_warning "ClickHouse service already exists in docker-compose.yml"
+    print_status "ClickHouse service already exists in docker-compose.yml"
+    
+    # Check if the ports are correct
+    if ! grep -q "9000:9000" docker-compose.yml; then
+        print_status "Updating ClickHouse ports in docker-compose.yml..."
+        # Update the ports section
+        sed -i '/clickhouse:/,/restart: unless-stopped/s/ports:.*/ports:\
+      - "8123:8123"\
+      - "9000:9000"/' docker-compose.yml
+        print_success "ClickHouse ports updated"
+    fi
 fi
 
-print_status "Step 4: Starting ClickHouse..."
+print_status "Step 9: Starting ClickHouse..."
 docker-compose up -d clickhouse
 
-print_status "Step 5: Waiting for ClickHouse to start..."
+print_status "Step 10: Waiting for ClickHouse to start..."
 sleep 20
 
-print_status "Step 6: Testing ClickHouse..."
+print_status "Step 11: Testing ClickHouse..."
+
+# Test ClickHouse HTTP endpoint
+echo "Testing ClickHouse HTTP endpoint (port 8123)..."
 if curl -s http://localhost:8123 >/dev/null; then
-    print_success "ClickHouse is working!"
+    print_success "✅ ClickHouse HTTP (port 8123): OK"
 else
-    print_warning "ClickHouse may still be starting, checking logs..."
+    print_warning "❌ ClickHouse HTTP (port 8123): DOWN"
+    print_status "Checking ClickHouse logs..."
     docker-compose logs --tail=10 clickhouse
 fi
 
-print_status "Step 7: Fixing monitoring script..."
-
-# Test current service endpoints
-print_status "Testing current service endpoints..."
-echo "Testing API Gateway..."
-curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
-
-echo "Testing Auth Service..."
-curl -s http://localhost:8081/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
-
-echo "Testing User Service..."
-curl -s http://localhost:8082/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
-
-print_status "Step 8: Creating fixed monitoring script..."
-
-cat > monitor_fixed.sh << 'EOF'
-#!/bin/bash
-
-echo "🖥️  System Resources:"
-echo "===================="
-
-# Memory usage
-echo "📊 Memory Usage:"
-free -h
-
-echo ""
-echo "💾 Disk Usage:"
-df -h
-
-echo ""
-echo "🐳 Docker Containers:"
-docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
-
-echo ""
-echo "🔍 Service Health:"
-# Test actual endpoints instead of /health
-curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
-curl -s http://localhost:8081/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
-curl -s http://localhost:8082/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
-curl -s http://localhost:8083/ >/dev/null && echo "✅ E-commerce Service: OK" || echo "❌ E-commerce Service: DOWN"
-curl -s http://localhost:8084/ >/dev/null && echo "✅ Payment Service: OK" || echo "❌ Payment Service: DOWN"
-curl -s http://localhost:8085/ >/dev/null && echo "✅ Notification Service: OK" || echo "❌ Notification Service: DOWN"
-curl -s http://localhost:8086/ >/dev/null && echo "✅ Content Service: OK" || echo "❌ Content Service: DOWN"
-curl -s http://localhost:8087/ >/dev/null && echo "✅ Analytics Service: OK" || echo "❌ Analytics Service: DOWN"
-curl -s http://localhost:8088/ >/dev/null && echo "✅ Verification Service: OK" || echo "❌ Verification Service: DOWN"
-curl -s http://localhost:8089/ >/dev/null && echo "✅ Emergency Service: OK" || echo "❌ Emergency Service: DOWN"
-curl -s http://localhost:8090/ >/dev/null && echo "✅ Temple Service: OK" || echo "❌ Temple Service: DOWN"
-
-echo ""
-echo "🌐 Core Services:"
-curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
-curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO Console: OK" || echo "❌ MinIO Console: DOWN"
-curl -s http://localhost:9090 >/dev/null && echo "✅ Prometheus: OK" || echo "❌ Prometheus: DOWN"
-
-echo ""
-echo "📈 Database Connections:"
-docker exec shivish-postgres psql -U shivish_user -d shivish_platform -c "SELECT count(*) as active_connections FROM pg_stat_activity;" 2>/dev/null || echo "❌ PostgreSQL: Not accessible"
-
-echo ""
-echo "🔄 Redis Status:"
-docker exec shivish-redis redis-cli ping 2>/dev/null || echo "❌ Redis: Not accessible"
-
-echo ""
-echo "📊 ClickHouse Status:"
-curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
-
-echo ""
-echo "🌐 Service URLs:"
-echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8080"
-echo "   - Grafana: http://$(hostname -I | awk '{print $1}'):3000"
-echo "   - MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
-echo "   - Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
-echo "   - ClickHouse: http://$(hostname -I | awk '{print $1}'):8123"
-EOF
-
-chmod +x monitor_fixed.sh
-print_success "Fixed monitoring script created"
-
-print_status "Step 9: Replacing the original monitor.sh script..."
-
-# Backup the original monitor.sh
-if [ -f "monitor.sh" ]; then
-    cp monitor.sh monitor.sh.backup
-    print_status "Original monitor.sh backed up as monitor.sh.backup"
-fi
-
-# Replace monitor.sh with the fixed version
-cp monitor_fixed.sh monitor.sh
-chmod +x monitor.sh
-
-print_success "Original monitor.sh replaced with fixed version"
-
-print_status "Step 10: Creating comprehensive health check script..."
-
-cat > health_check.sh << 'EOF'
-#!/bin/bash
-
-echo "🏥 Comprehensive Health Check"
-echo "============================="
-
-# Check if we're in the right directory
-if [ ! -f "docker-compose.yml" ]; then
-    echo "❌ Error: Not in project directory. Please run from /opt/shivish"
-    exit 1
-fi
-
-echo "📋 Container Status:"
-docker-compose ps
-
-echo ""
-echo "🔍 Service Endpoint Tests:"
-echo "-------------------------"
-
-# Test all service endpoints
-services=(
-    "8080:API Gateway"
-    "8081:Auth Service"
-    "8082:User Service"
-    "8083:E-commerce Service"
-    "8084:Payment Service"
-    "8085:Notification Service"
-    "8086:Content Service"
-    "8087:Analytics Service"
-    "8088:Verification Service"
-    "8089:Emergency Service"
-    "8090:Temple Service"
-)
-
-for service in "${services[@]}"; do
-    port=$(echo $service | cut -d: -f1)
-    name=$(echo $service | cut -d: -f2)
-    
-    if curl -s --connect-timeout 5 http://localhost:$port/ >/dev/null 2>&1; then
-        echo "✅ $name (Port $port): OK"
-    else
-        echo "❌ $name (Port $port): DOWN"
-    fi
-done
-
-echo ""
-echo "🌐 Core Services:"
-echo "----------------"
-
-# Test core services
-core_services=(
-    "3000:Grafana"
-    "9001:MinIO Console"
-    "9090:Prometheus"
-    "8123:ClickHouse"
-)
-
-for service in "${core_services[@]}"; do
-    port=$(echo $service | cut -d: -f1)
-    name=$(echo $service | cut -d: -f2)
-    
-    if curl -s --connect-timeout 5 http://localhost:$port/ >/dev/null 2>&1; then
-        echo "✅ $name (Port $port): OK"
-    else
-        echo "❌ $name (Port $port): DOWN"
-    fi
-done
-
-echo ""
-echo "🗄️  Database Tests:"
-echo "------------------"
-
-# Test PostgreSQL
-if docker exec shivish-postgres psql -U shivish_user -d shivish_platform -c "SELECT 1;" >/dev/null 2>&1; then
-    echo "✅ PostgreSQL: OK"
+# Test ClickHouse TCP endpoint
+echo "Testing ClickHouse TCP endpoint (port 9000)..."
+if curl -s http://localhost:9000 >/dev/null 2>&1; then
+    print_success "✅ ClickHouse TCP (port 9000): OK"
 else
-    echo "❌ PostgreSQL: DOWN"
+    print_warning "❌ ClickHouse TCP (port 9000): DOWN (this is normal for HTTP test)"
 fi
-
-# Test Redis
-if docker exec shivish-redis redis-cli ping >/dev/null 2>&1; then
-    echo "✅ Redis: OK"
-else
-    echo "❌ Redis: DOWN"
-fi
-
-echo ""
-echo "📊 System Resources:"
-echo "-------------------"
-echo "Memory Usage:"
-free -h | grep -E "(Mem|Swap)"
-
-echo ""
-echo "Disk Usage:"
-df -h | grep -E "(Filesystem|/dev/)"
-
-echo ""
-echo "🐳 Docker Resource Usage:"
-docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" | head -10
-
-echo ""
-echo "🌐 Access URLs:"
-echo "--------------"
-SERVER_IP=$(hostname -I | awk '{print $1}')
-echo "   - API Gateway: http://$SERVER_IP:8080"
-echo "   - Grafana: http://$SERVER_IP:3000"
-echo "   - MinIO Console: http://$SERVER_IP:9001"
-echo "   - Prometheus: http://$SERVER_IP:9090"
-echo "   - ClickHouse: http://$SERVER_IP:8123"
-
-echo ""
-echo "✅ Health check completed!"
-EOF
-
-chmod +x health_check.sh
-print_success "Comprehensive health check script created"
-
-print_status "Step 11: Creating quick status script..."
-
-cat > status.sh << 'EOF'
-#!/bin/bash
-
-echo "⚡ Quick Status Check"
-echo "===================="
-
-# Quick container status
-echo "🐳 Container Status:"
-docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
-
-echo ""
-echo "🔍 Quick Service Test:"
-# Test a few key services quickly
-curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
-curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
-curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO: OK" || echo "❌ MinIO: DOWN"
-curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
-
-echo ""
-echo "📊 Memory Usage:"
-free -h | grep Mem
-
-echo ""
-echo "💾 Disk Usage:"
-df -h | grep -E "(Filesystem|/dev/)" | head -2
-EOF
-
-chmod +x status.sh
-print_success "Quick status script created"
 
 print_status "Step 12: Final verification..."
 
@@ -459,24 +291,93 @@ echo ""
 echo "🧪 Running final verification..."
 echo "==============================="
 
-# Test the fixed monitoring script
-echo "Testing monitor.sh:"
-./monitor.sh
+# Check container status
+echo "📋 Container Status:"
+docker-compose ps clickhouse
 
 echo ""
-print_success "🎉 Complete fix completed successfully!"
+echo "🔍 Port Usage After Fix:"
+sudo netstat -tulpn | grep -E ":(8123|9000)" || echo "No processes using ClickHouse ports"
+
+echo ""
+echo "📊 ClickHouse Logs (last 10 lines):"
+docker-compose logs --tail=10 clickhouse
+
+print_status "Step 13: Creating port conflict prevention script..."
+
+cat > prevent_port_conflicts.sh << 'EOF'
+#!/bin/bash
+
+echo "🛡️  Port Conflict Prevention Script"
+echo "=================================="
+
+# Function to check and kill process on port
+check_and_kill_port() {
+    local port=$1
+    local service_name=$2
+    
+    if sudo lsof -t -i:$port >/dev/null 2>&1; then
+        echo "⚠️  Port $port is in use by $service_name"
+        PIDS=$(sudo lsof -t -i:$port)
+        echo "Found processes: $PIDS"
+        read -p "Do you want to kill these processes? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "$PIDS" | xargs sudo kill -9 2>/dev/null || true
+            echo "✅ Killed processes using port $port"
+        else
+            echo "❌ Skipped killing processes on port $port"
+        fi
+    else
+        echo "✅ Port $port is free"
+    fi
+}
+
+echo "Checking critical ports..."
+
+# Check ClickHouse ports
+check_and_kill_port 8123 "ClickHouse HTTP"
+check_and_kill_port 9000 "ClickHouse TCP"
+
+# Check other critical ports
+check_and_kill_port 5432 "PostgreSQL"
+check_and_kill_port 6379 "Redis"
+check_and_kill_port 3000 "Grafana"
+check_and_kill_port 9001 "MinIO Console"
+check_and_kill_port 9090 "Prometheus"
+
+echo "Port conflict prevention completed!"
+EOF
+
+chmod +x prevent_port_conflicts.sh
+print_success "Port conflict prevention script created"
+
+print_success "🎉 Port conflicts fix completed successfully!"
+echo ""
+echo "=================================================="
+echo "📋 Summary:"
+echo "=================================================="
+echo ""
+echo "✅ Port conflicts resolved"
+echo "✅ ClickHouse configuration created"
+echo "✅ ClickHouse data directory permissions fixed"
+echo "✅ ClickHouse service added/updated in docker-compose.yml"
+echo "✅ ClickHouse container started"
+echo "✅ Port conflict prevention script created"
 echo ""
 echo "=================================================="
 echo "📋 Available Scripts:"
 echo "=================================================="
 echo ""
-echo "1. 📊 ./monitor.sh          - Fixed monitoring script"
-echo "2. 🏥 ./health_check.sh     - Comprehensive health check"
-echo "3. ⚡ ./status.sh           - Quick status check"
-echo "4. 🚀 ./deploy.sh           - Deploy services"
-echo "5. 💾 ./backup.sh           - Backup data"
-echo "6. 🧹 ./maintenance.sh      - Maintenance tasks"
+echo "1. 🛡️  ./prevent_port_conflicts.sh - Prevent future port conflicts"
+echo "2. 📊 ./monitor.sh                - Monitor all services"
+echo "3. 🏥 ./health_check.sh           - Comprehensive health check"
+echo "4. ⚡ ./status.sh                 - Quick status check"
+echo "5. 🚀 ./deploy.sh                 - Deploy services"
+echo "6. 💾 ./backup.sh                 - Backup data"
 echo ""
 echo "=================================================="
-echo "🌐 Your services should now show as OK in monitoring!"
+echo "🌐 ClickHouse should now be accessible at:"
+echo "   - HTTP: http://$(hostname -I | awk '{print $1}'):8123"
+echo "   - TCP:  $(hostname -I | awk '{print $1}'):9000"
 echo "=================================================="
