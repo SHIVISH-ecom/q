@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# 🔧 Monitoring Fix Script
-# This script fixes the monitoring health check issues
+# 🔧 Complete Fix Script for Shivish Platform
+# This script fixes monitoring and ClickHouse issues
 
 set -e  # Exit on any error
 
-echo "🔧 Starting Monitoring Fix Script..."
-echo "=================================="
+echo "🔧 Starting Complete Fix Script for Shivish Platform..."
+echo "====================================================="
 
 # Colors for output
 RED='\033[0;31m'
@@ -60,7 +60,160 @@ print_status "Working in project root directory: $PROJECT_ROOT"
 print_status "Step 1: Checking current Docker container status..."
 docker-compose ps
 
-print_status "Step 2: Testing current service endpoints..."
+print_status "Step 2: Fixing ClickHouse issues..."
+
+# Stop and remove ClickHouse if it exists
+print_status "Stopping and removing existing ClickHouse..."
+docker-compose stop clickhouse 2>/dev/null || true
+docker-compose rm -f clickhouse 2>/dev/null || true
+
+# Create ClickHouse configuration directory
+print_status "Creating ClickHouse configuration..."
+mkdir -p configs/clickhouse
+
+# Create ClickHouse config.xml
+print_status "Creating ClickHouse config.xml..."
+cat > configs/clickhouse/config.xml << 'EOF'
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
+
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <listen_host>0.0.0.0</listen_host>
+
+    <max_connections>4096</max_connections>
+    <keep_alive_timeout>3</keep_alive_timeout>
+    <max_concurrent_queries>100</max_concurrent_queries>
+
+    <path>/var/lib/clickhouse/</path>
+    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+
+    <users_config>users.xml</users_config>
+    <default_profile>default</default_profile>
+    <default_database>default</default_database>
+    <timezone>UTC</timezone>
+</clickhouse>
+EOF
+
+# Create ClickHouse users.xml
+print_status "Creating ClickHouse users.xml..."
+cat > configs/clickhouse/users.xml << 'EOF'
+<?xml version="1.0"?>
+<clickhouse>
+    <users>
+        <default>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </default>
+        <analytics_user>
+            <password>clickhouse_secure_password_2024</password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </analytics_user>
+    </users>
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <queries>0</queries>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+    </quotas>
+    <profiles>
+        <default>
+            <max_memory_usage>10000000000</max_memory_usage>
+            <use_uncompressed_cache>0</use_uncompressed_cache>
+            <load_balancing>random</load_balancing>
+        </default>
+    </profiles>
+</clickhouse>
+EOF
+
+# Fix ClickHouse data directory permissions
+print_status "Fixing ClickHouse data directory permissions..."
+sudo rm -rf data/clickhouse/* 2>/dev/null || true
+mkdir -p data/clickhouse
+sudo chown -R 999:999 data/clickhouse
+sudo chmod -R 755 data/clickhouse
+
+print_success "ClickHouse configuration created"
+
+print_status "Step 3: Adding ClickHouse to docker-compose.yml..."
+
+# Check if ClickHouse service exists in docker-compose.yml
+if ! grep -q "clickhouse:" docker-compose.yml; then
+    print_status "Adding ClickHouse service to docker-compose.yml..."
+    
+    # Create backup
+    cp docker-compose.yml docker-compose.yml.backup
+    
+    # Add ClickHouse service before the networks section
+    sed -i '/^networks:/i\
+  clickhouse:\
+    image: clickhouse/clickhouse-server:latest\
+    container_name: shivish-clickhouse\
+    environment:\
+      CLICKHOUSE_DB: analytics\
+      CLICKHOUSE_USER: analytics_user\
+      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024\
+    volumes:\
+      - ./data/clickhouse:/var/lib/clickhouse\
+      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml\
+      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml\
+    ports:\
+      - "8123:8123"\
+      - "9000:9000"\
+    networks:\
+      - shivish-network\
+    restart: unless-stopped\
+    ulimits:\
+      nofile:\
+        soft: 262144\
+        hard: 262144\
+' docker-compose.yml
+    
+    print_success "ClickHouse service added to docker-compose.yml"
+else
+    print_warning "ClickHouse service already exists in docker-compose.yml"
+fi
+
+print_status "Step 4: Starting ClickHouse..."
+docker-compose up -d clickhouse
+
+print_status "Step 5: Waiting for ClickHouse to start..."
+sleep 20
+
+print_status "Step 6: Testing ClickHouse..."
+if curl -s http://localhost:8123 >/dev/null; then
+    print_success "ClickHouse is working!"
+else
+    print_warning "ClickHouse may still be starting, checking logs..."
+    docker-compose logs --tail=10 clickhouse
+fi
+
+print_status "Step 7: Fixing monitoring script..."
+
+# Test current service endpoints
+print_status "Testing current service endpoints..."
 echo "Testing API Gateway..."
 curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
 
@@ -70,7 +223,7 @@ curl -s http://localhost:8081/ >/dev/null && echo "✅ Auth Service: OK" || echo
 echo "Testing User Service..."
 curl -s http://localhost:8082/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
 
-print_status "Step 3: Creating fixed monitoring script..."
+print_status "Step 8: Creating fixed monitoring script..."
 
 cat > monitor_fixed.sh << 'EOF'
 #!/bin/bash
@@ -129,12 +282,13 @@ echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8080"
 echo "   - Grafana: http://$(hostname -I | awk '{print $1}'):3000"
 echo "   - MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
 echo "   - Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
+echo "   - ClickHouse: http://$(hostname -I | awk '{print $1}'):8123"
 EOF
 
 chmod +x monitor_fixed.sh
 print_success "Fixed monitoring script created"
 
-print_status "Step 4: Replacing the original monitor.sh script..."
+print_status "Step 9: Replacing the original monitor.sh script..."
 
 # Backup the original monitor.sh
 if [ -f "monitor.sh" ]; then
@@ -148,13 +302,7 @@ chmod +x monitor.sh
 
 print_success "Original monitor.sh replaced with fixed version"
 
-print_status "Step 5: Testing the fixed monitoring script..."
-echo ""
-echo "🧪 Testing the fixed monitoring script..."
-echo "========================================"
-./monitor.sh
-
-print_status "Step 6: Creating a comprehensive health check script..."
+print_status "Step 10: Creating comprehensive health check script..."
 
 cat > health_check.sh << 'EOF'
 #!/bin/bash
@@ -273,7 +421,7 @@ EOF
 chmod +x health_check.sh
 print_success "Comprehensive health check script created"
 
-print_status "Step 7: Creating a quick status script..."
+print_status "Step 11: Creating quick status script..."
 
 cat > status.sh << 'EOF'
 #!/bin/bash
@@ -291,6 +439,7 @@ echo "🔍 Quick Service Test:"
 curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
 curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
 curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO: OK" || echo "❌ MinIO: DOWN"
+curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
 
 echo ""
 echo "📊 Memory Usage:"
@@ -304,7 +453,7 @@ EOF
 chmod +x status.sh
 print_success "Quick status script created"
 
-print_status "Step 8: Final verification..."
+print_status "Step 12: Final verification..."
 
 echo ""
 echo "🧪 Running final verification..."
@@ -315,7 +464,7 @@ echo "Testing monitor.sh:"
 ./monitor.sh
 
 echo ""
-print_success "🎉 Monitoring fix completed successfully!"
+print_success "🎉 Complete fix completed successfully!"
 echo ""
 echo "=================================================="
 echo "📋 Available Scripts:"
