@@ -132,9 +132,9 @@ http {
         listen 443 ssl http2;
         server_name $EXTERNAL_IP;
 
-        # SSL Configuration
-        ssl_certificate /etc/letsencrypt/live/$EXTERNAL_IP/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/$EXTERNAL_IP/privkey.pem;
+        # SSL Configuration (Self-signed certificate)
+        ssl_certificate /etc/ssl/shivish/fullchain.pem;
+        ssl_certificate_key /etc/ssl/shivish/privkey.pem;
         
         # SSL Security Settings
         ssl_protocols TLSv1.2 TLSv1.3;
@@ -317,23 +317,29 @@ EOF
 
 print_success "SSL nginx configuration created!"
 
-print_status "Step 5: Obtaining SSL Certificate..."
+print_status "Step 5: Setting up SSL Certificate..."
 
-# Stop nginx if running
-sudo systemctl stop nginx 2>/dev/null || true
+# Let's Encrypt doesn't work with bare IP addresses
+# We'll create a self-signed certificate for development/production use
+print_warning "Let's Encrypt doesn't support bare IP addresses ($EXTERNAL_IP)"
+print_status "Creating self-signed SSL certificate for production use..."
 
-# Get SSL certificate
-print_status "Requesting SSL certificate for $EXTERNAL_IP..."
-if sudo certbot certonly --standalone --non-interactive --agree-tos --email admin@$EXTERNAL_IP -d $EXTERNAL_IP; then
-    print_success "SSL certificate obtained successfully!"
-else
-    print_warning "SSL certificate request failed. This might be due to:"
-    print_warning "1. Port 80 is not accessible from the internet"
-    print_warning "2. Domain/IP is not properly configured"
-    print_warning "3. Firewall blocking the request"
-    print_warning "Continuing with HTTP-only setup..."
-    SSL_AVAILABLE=false
-fi
+# Create SSL directory
+sudo mkdir -p /etc/ssl/shivish
+
+# Generate self-signed certificate
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/shivish/privkey.pem \
+    -out /etc/ssl/shivish/fullchain.pem \
+    -subj "/C=IN/ST=India/L=India/O=Shivish/OU=IT/CN=$EXTERNAL_IP" \
+    -addext "subjectAltName=IP:$EXTERNAL_IP"
+
+# Set proper permissions
+sudo chmod 600 /etc/ssl/shivish/privkey.pem
+sudo chmod 644 /etc/ssl/shivish/fullchain.pem
+
+print_success "Self-signed SSL certificate created successfully!"
+SSL_AVAILABLE=true
 
 print_status "Step 6: Updating Docker Compose for SSL..."
 
@@ -355,18 +361,34 @@ docker-compose -f docker-compose-production.yml up -d
 
 print_status "Step 8: Setting up SSL Certificate Auto-Renewal..."
 
-# Create renewal script
-cat > /opt/shivish/renew_ssl.sh << 'EOF'
+# Create renewal script for self-signed certificates
+cat > /opt/shivish/renew_ssl.sh << EOF
 #!/bin/bash
-# SSL Certificate Renewal Script
+# SSL Certificate Renewal Script (Self-signed)
 
-echo "🔄 Renewing SSL certificates..."
+echo "🔄 Renewing self-signed SSL certificates..."
+
+# Get external IP
+EXTERNAL_IP=\$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || curl -s icanhazip.com 2>/dev/null)
+
+if [ -z "\$EXTERNAL_IP" ]; then
+    echo "❌ Could not determine external IP"
+    exit 1
+fi
 
 # Stop nginx
 sudo systemctl stop nginx 2>/dev/null || true
 
-# Renew certificate
-sudo certbot renew --quiet
+# Generate new self-signed certificate
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \\
+    -keyout /etc/ssl/shivish/privkey.pem \\
+    -out /etc/ssl/shivish/fullchain.pem \\
+    -subj "/C=IN/ST=India/L=India/O=Shivish/OU=IT/CN=\$EXTERNAL_IP" \\
+    -addext "subjectAltName=IP:\$EXTERNAL_IP"
+
+# Set proper permissions
+sudo chmod 600 /etc/ssl/shivish/privkey.pem
+sudo chmod 644 /etc/ssl/shivish/fullchain.pem
 
 # Restart nginx
 sudo systemctl start nginx 2>/dev/null || true
@@ -375,7 +397,7 @@ sudo systemctl start nginx 2>/dev/null || true
 cd /opt/shivish
 docker-compose -f docker-compose-production.yml restart nginx
 
-echo "✅ SSL certificate renewal completed!"
+echo "✅ Self-signed SSL certificate renewed successfully!"
 EOF
 
 chmod +x /opt/shivish/renew_ssl.sh
@@ -403,6 +425,8 @@ if [ "$SSL_AVAILABLE" != "false" ]; then
     print_status "Testing HTTPS connection..."
     if curl -s -k https://$EXTERNAL_IP/api/ >/dev/null; then
         print_success "HTTPS connection working!"
+        print_warning "Note: Self-signed certificate - browsers will show security warning"
+        print_warning "This is normal for development. For production, consider using a domain name with Let's Encrypt"
     else
         print_warning "HTTPS connection not working"
     fi
@@ -513,10 +537,11 @@ echo "=================================================="
 echo ""
 echo "✅ Firewall configured and enabled"
 if [ "$SSL_AVAILABLE" != "false" ]; then
-    echo "✅ SSL certificate installed and configured"
+    echo "✅ Self-signed SSL certificate installed and configured"
     echo "✅ HTTPS redirect configured"
     echo "✅ Auto-renewal configured"
     echo "✅ Security headers configured"
+    echo "⚠️  Note: Self-signed certificate (browsers will show security warning)"
 else
     echo "⚠️  SSL certificate not available (using HTTP)"
 fi
