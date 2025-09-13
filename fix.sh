@@ -668,47 +668,92 @@ if ! docker-compose ps clickhouse | grep -q "Up"; then
     # Try starting with root user as fallback
     print_status "Trying ClickHouse with root user permissions..."
     
-    # Temporarily modify docker-compose to run as root
-    sed -i '/clickhouse:/,/depends_on:/c\
-  clickhouse:\
-    image: clickhouse/clickhouse-server:latest\
-    container_name: shivish-clickhouse\
-    user: "0:0"\
-    environment:\
-      CLICKHOUSE_DB: analytics\
-      CLICKHOUSE_USER: analytics_user\
-      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024\
-    volumes:\
-      - ./data/clickhouse:/var/lib/clickhouse\
-      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml\
-      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml\
-    ports:\
-      - "8123:8123"\
-      - "9002:9000"\
-    networks:\
-      - shivish-network\
-    restart: unless-stopped\
-    ulimits:\
-      nofile:\
-        soft: 262144\
-        hard: 262144\
-    depends_on:\
-      - postgres\
-      - redis' docker-compose.yml
-    
-    # Fix permissions for root user
+    # Create a simple ClickHouse-only compose file for root user
+    cat > docker-compose-clickhouse.yml << 'EOF'
+version: '3.8'
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: shivish-clickhouse
+    user: "0:0"
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics_user
+      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+    ports:
+      - "8123:8123"
+      - "9002:9000"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: shivish-postgres
+    environment:
+      POSTGRES_DB: shivish_platform
+      POSTGRES_USER: shivish_user
+      POSTGRES_PASSWORD: shivish_secure_password_2024
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: shivish-redis
+    command: redis-server --requirepass redis_secure_password_2024
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - shivish-network
+    restart: unless-stopped
+
+networks:
+  shivish-network:
+    driver: bridge
+EOF
+
+    # Fix permissions for root user first
     sudo chown -R 0:0 data/clickhouse
     sudo chmod -R 755 data/clickhouse
     
-    # Start ClickHouse
-    docker-compose up -d clickhouse
+    # Use the temporary compose file
+    docker-compose -f docker-compose-clickhouse.yml up -d clickhouse
     sleep 20
     
-    if docker-compose ps clickhouse | grep -q "Up"; then
+    if docker-compose -f docker-compose-clickhouse.yml ps clickhouse | grep -q "Up"; then
         print_success "ClickHouse is now running with root user permissions"
+        
+        # Clean up temporary file
+        rm -f docker-compose-clickhouse.yml
+        
+        # Switch back to main compose file
+        docker-compose stop clickhouse
+        docker-compose rm -f clickhouse
+        docker-compose up -d clickhouse
     else
         print_error "ClickHouse still failing. Checking logs..."
-        docker-compose logs --tail=20 clickhouse
+        docker-compose -f docker-compose-clickhouse.yml logs --tail=20 clickhouse
+        
+        # Clean up temporary file
+        rm -f docker-compose-clickhouse.yml
     fi
 else
     print_success "ClickHouse started successfully"
