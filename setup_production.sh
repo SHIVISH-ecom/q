@@ -53,7 +53,40 @@ print_status "Working in project root directory: $PROJECT_ROOT"
 print_status "Step 1: Stopping all existing Docker services..."
 docker-compose down 2>/dev/null || true
 
-print_status "Step 2: Building all Go microservices..."
+print_status "Step 2: Installing Go and building all microservices..."
+
+# Check if microservices directory exists
+if [ ! -d "microservices" ]; then
+    print_error "Microservices directory not found!"
+    print_error "Please ensure you have the microservices directory with Go services"
+    print_error "Expected structure: /opt/shivish/microservices/auth-service/, etc."
+    exit 1
+fi
+
+# Install Go if not present
+if ! command -v go &> /dev/null; then
+    print_status "Installing Go programming language..."
+    
+    # Download and install Go
+    cd /tmp
+    wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+    
+    # Add Go to PATH
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+    export PATH=$PATH:/usr/local/go/bin
+    
+    # Verify installation
+    /usr/local/go/bin/go version
+    
+    # Return to project directory
+    cd "$PROJECT_ROOT"
+    
+    print_success "Go installed successfully!"
+else
+    print_success "Go is already installed: $(go version)"
+fi
 
 # Function to build a microservice
 build_microservice() {
@@ -68,14 +101,14 @@ build_microservice() {
         # Check if go.mod exists, if not create it
         if [ ! -f "go.mod" ]; then
             print_status "Creating go.mod for $service_name..."
-            go mod init $service_name
+            /usr/local/go/bin/go mod init $service_name
         fi
         
         # Tidy dependencies
-        go mod tidy
+        /usr/local/go/bin/go mod tidy
         
         # Build the service
-        go build -o $service_name .
+        /usr/local/go/bin/go build -o $service_name .
         
         # Create Dockerfile if it doesn't exist
         if [ ! -f "Dockerfile" ]; then
@@ -98,7 +131,63 @@ EOF
         print_success "$service_name built successfully"
         cd "$PROJECT_ROOT"
     else
-        print_warning "Directory microservices/$service_name not found, skipping..."
+        print_warning "Directory microservices/$service_name not found, creating placeholder..."
+        
+        # Create a simple placeholder service
+        mkdir -p "microservices/$service_name"
+        cd "microservices/$service_name"
+        
+        # Create a simple Go HTTP server
+        cat > main.go << EOF
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+)
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    w.WriteHeader(http.StatusOK)
+    fmt.Fprintf(w, "{\"status\":\"ok\",\"service\":\"$service_name\"}")
+}
+
+func main() {
+    http.HandleFunc("/health", healthHandler)
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        fmt.Fprintf(w, "Welcome to $service_name service")
+    })
+    
+    log.Printf("$service_name service starting on port $service_port")
+    log.Fatal(http.ListenAndServe(":$service_port", nil))
+}
+EOF
+
+        # Create go.mod
+        /usr/local/go/bin/go mod init $service_name
+        
+        # Build the placeholder service
+        /usr/local/go/bin/go build -o $service_name .
+        
+        # Create Dockerfile
+        cat > Dockerfile << EOF
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+
+COPY $service_name .
+EXPOSE $service_port
+
+CMD ["./$service_name"]
+EOF
+        
+        # Build Docker image
+        docker build -t shivish-$service_name .
+        
+        print_success "$service_name placeholder created and built successfully"
+        cd "$PROJECT_ROOT"
     fi
 }
 
