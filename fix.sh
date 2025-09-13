@@ -456,7 +456,7 @@ services:
       CLICKHOUSE_TCP_PORT: 9000
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
-      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ./configs/clickhouse/config-minimal.xml:/etc/clickhouse-server/config.xml
       - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml
       # Add log directory mount
       - ./logs/clickhouse:/var/log/clickhouse-server
@@ -676,9 +676,9 @@ print_success "Docker Compose configuration created with proper port assignments
 
 print_status "Step 10: Setting proper permissions and cleaning ClickHouse data..."
 
-# Clean ClickHouse data directory to prevent corruption issues
-print_status "Cleaning ClickHouse data directory..."
-sudo rm -rf data/clickhouse/* 2>/dev/null || true
+# Clean ClickHouse data directory completely to prevent initialization loops
+print_status "Cleaning ClickHouse data directory completely..."
+sudo rm -rf data/clickhouse 2>/dev/null || true
 sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
 
 # Set proper permissions for all services
@@ -710,30 +710,61 @@ docker-compose up -d minio
 sleep 5
 
 # Start ClickHouse (after other services are ready)
-print_status "Starting ClickHouse with comprehensive fixes..."
+print_status "Starting ClickHouse with fresh initialization..."
 
-# Create ClickHouse startup script
-cat > start_clickhouse.sh << 'EOF'
-#!/bin/bash
-set -e
+# Stop any existing ClickHouse container first
+docker-compose stop clickhouse 2>/dev/null || true
+docker-compose rm -f clickhouse 2>/dev/null || true
 
-echo "Starting ClickHouse with comprehensive fixes..."
+# Ensure completely clean ClickHouse data directory
+print_status "Ensuring completely clean ClickHouse data directory..."
+sudo rm -rf data/clickhouse 2>/dev/null || true
+sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
+sudo chown -R 0:0 data/clickhouse
+sudo chmod -R 755 data/clickhouse
 
-# Ensure all directories exist and have proper permissions
-mkdir -p /var/lib/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
-mkdir -p /var/log/clickhouse-server
-chown -R 0:0 /var/lib/clickhouse /var/log/clickhouse-server
-chmod -R 755 /var/lib/clickhouse /var/log/clickhouse-server
+# Create a minimal ClickHouse configuration to avoid initialization loops
+print_status "Creating minimal ClickHouse configuration..."
+cat > configs/clickhouse/config-minimal.xml << 'EOF'
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
 
-# Start ClickHouse server
-exec /usr/bin/clickhouse-server --config-file=/etc/clickhouse-server/config.xml
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <listen_host>0.0.0.0</listen_host>
+
+    <path>/var/lib/clickhouse/</path>
+    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+
+    <users_config>/etc/clickhouse-server/users.xml</users_config>
+    <default_profile>default</default_profile>
+    <default_database>default</default_database>
+    <timezone>UTC</timezone>
+
+    <!-- Disable problematic features that cause restart loops -->
+    <max_connections>100</max_connections>
+    <keep_alive_timeout>3</keep_alive_timeout>
+    <max_concurrent_queries>10</max_concurrent_queries>
+    
+    <!-- Memory settings to prevent crashes -->
+    <max_memory_usage>1000000000</max_memory_usage>
+    <max_bytes_before_external_group_by>1000000000</max_bytes_before_external_group_by>
+    <max_bytes_before_external_sort>1000000000</max_bytes_before_external_sort>
+</clickhouse>
 EOF
 
-chmod +x start_clickhouse.sh
-
-# Start ClickHouse with the custom script
+# Start ClickHouse with minimal configuration
+print_status "Starting ClickHouse with minimal configuration..."
 docker-compose up -d clickhouse
-sleep 30
+sleep 45
 
 # Check ClickHouse status and fix if needed
 print_status "Checking ClickHouse startup..."
@@ -746,7 +777,7 @@ if ! docker-compose ps clickhouse | grep -q "Up"; then
     
     # Check if container is restarting
     if docker-compose ps clickhouse | grep -q "Restarting"; then
-        print_warning "ClickHouse container is in restart loop"
+        print_warning "ClickHouse container is in restart loop - applying specific fix..."
         
         # Stop the restarting container
         docker-compose stop clickhouse
@@ -754,20 +785,67 @@ if ! docker-compose ps clickhouse | grep -q "Up"; then
         
         # Wait a moment
         sleep 5
+        
+        # Complete cleanup to prevent "Database directory appears to contain a database" issue
+        print_status "Performing complete ClickHouse cleanup to prevent initialization loop..."
+        sudo rm -rf data/clickhouse
+        sudo rm -rf logs/clickhouse
+        sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
+        sudo mkdir -p logs/clickhouse
+        sudo chown -R 0:0 data/clickhouse logs/clickhouse
+        sudo chmod -R 755 data/clickhouse logs/clickhouse
+        
+        # Create a completely fresh ClickHouse container
+        print_status "Creating completely fresh ClickHouse container..."
+        docker run --rm -d \
+            --name shivish-clickhouse-temp \
+            --network shivish_shivish-network \
+            -p 8123:8123 \
+            -p 9002:9000 \
+            -v $(pwd)/data/clickhouse:/var/lib/clickhouse \
+            -v $(pwd)/configs/clickhouse/config-minimal.xml:/etc/clickhouse-server/config.xml \
+            -v $(pwd)/configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml \
+            -v $(pwd)/logs/clickhouse:/var/log/clickhouse-server \
+            --user 0:0 \
+            --ulimit nofile=262144:262144 \
+            clickhouse/clickhouse-server:latest
+        
+        # Wait for it to start
+        sleep 30
+        
+        # Check if it's working
+        if docker ps | grep -q "shivish-clickhouse-temp"; then
+            print_success "Fresh ClickHouse container is running"
+            
+            # Test connectivity
+            if curl -s http://localhost:8123 >/dev/null; then
+                print_success "Fresh ClickHouse is responding!"
+                
+                # Stop the temp container and start with docker-compose
+                docker stop shivish-clickhouse-temp
+                docker-compose up -d clickhouse
+                sleep 20
+            else
+                print_warning "Fresh ClickHouse container not responding"
+                docker stop shivish-clickhouse-temp
+            fi
+        else
+            print_error "Fresh ClickHouse container failed to start"
+        fi
+    else
+        # Regular cleanup for non-restarting containers
+        print_status "Cleaning ClickHouse data directory completely..."
+        sudo rm -rf data/clickhouse/*
+        sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
+        sudo chown -R 0:0 data/clickhouse
+        sudo chmod -R 755 data/clickhouse
+        
+        # Also clean logs
+        sudo rm -rf logs/clickhouse/*
+        sudo mkdir -p logs/clickhouse
+        sudo chown -R 0:0 logs/clickhouse
+        sudo chmod -R 755 logs/clickhouse
     fi
-    
-    # Clean data directory completely and recreate
-    print_status "Cleaning ClickHouse data directory completely..."
-    sudo rm -rf data/clickhouse/*
-    sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
-    sudo chown -R 0:0 data/clickhouse
-    sudo chmod -R 755 data/clickhouse
-    
-    # Also clean logs
-    sudo rm -rf logs/clickhouse/*
-    sudo mkdir -p logs/clickhouse
-    sudo chown -R 0:0 logs/clickhouse
-    sudo chmod -R 755 logs/clickhouse
     
     # Try starting with root user as fallback
     print_status "Trying ClickHouse with root user permissions..."
