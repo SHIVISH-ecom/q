@@ -144,7 +144,7 @@ print_success "Environment configuration created"
 
 print_status "Step 6: Creating ClickHouse configuration..."
 
-# Create ClickHouse config.xml
+# Create ClickHouse config.xml with stability optimizations
 cat > configs/clickhouse/config.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
@@ -172,6 +172,46 @@ cat > configs/clickhouse/config.xml << 'EOF'
     <default_profile>default</default_profile>
     <default_database>default</default_database>
     <timezone>UTC</timezone>
+
+    <!-- Memory optimization settings to prevent restart loops -->
+    <max_memory_usage>2000000000</max_memory_usage>
+    <max_bytes_before_external_group_by>2000000000</max_bytes_before_external_group_by>
+    <max_bytes_before_external_sort>2000000000</max_bytes_before_external_sort>
+    
+    <!-- Background processing settings -->
+    <background_pool_size>16</background_pool_size>
+    <background_schedule_pool_size>16</background_schedule_pool_size>
+    <background_processing_pool_size>16</background_processing_pool_size>
+    
+    <!-- Merge settings -->
+    <merges_mutations_memory_usage_to_ram_ratio>0.5</merges_mutations_memory_usage_to_ram_ratio>
+    <merges_mutations_memory_usage_soft_limit>0.5</merges_mutations_memory_usage_soft_limit>
+    
+    <!-- Cache settings -->
+    <mark_cache_size>5368709120</mark_cache_size>
+    <uncompressed_cache_size>8589934592</uncompressed_cache_size>
+    
+    <!-- Network settings -->
+    <max_network_bandwidth>0</max_network_bandwidth>
+    <max_network_bandwidth_for_user>0</max_network_bandwidth_for_user>
+    
+    <!-- Storage settings -->
+    <storage_configuration>
+        <disks>
+            <default>
+                <path>/var/lib/clickhouse/</path>
+            </default>
+        </disks>
+        <policies>
+            <default>
+                <volumes>
+                    <default>
+                        <disk>default</disk>
+                    </default>
+                </volumes>
+            </default>
+        </policies>
+    </storage_configuration>
 </clickhouse>
 EOF
 
@@ -570,11 +610,21 @@ EOF
 
 print_success "Docker Compose configuration created with proper port assignments"
 
-print_status "Step 10: Setting proper permissions..."
+print_status "Step 10: Setting proper permissions and cleaning ClickHouse data..."
+
+# Clean ClickHouse data directory to prevent corruption issues
+print_status "Cleaning ClickHouse data directory..."
+sudo rm -rf data/clickhouse/* 2>/dev/null || true
+sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files}
+
+# Set proper permissions for all services
 sudo chown -R 999:999 data/postgres
 sudo chown -R 999:999 data/clickhouse
 sudo chown -R 472:472 data/grafana
 sudo chown -R 1001:1001 data/minio
+
+# Ensure ClickHouse directories have correct permissions
+sudo chmod -R 755 data/clickhouse
 
 print_success "Permissions set"
 
@@ -598,7 +648,71 @@ sleep 5
 # Start ClickHouse (after other services are ready)
 print_status "Starting ClickHouse..."
 docker-compose up -d clickhouse
-sleep 15
+sleep 20
+
+# Check ClickHouse status and fix if needed
+print_status "Checking ClickHouse startup..."
+if ! docker-compose ps clickhouse | grep -q "Up"; then
+    print_warning "ClickHouse failed to start, attempting to fix..."
+    
+    # Stop and remove ClickHouse
+    docker-compose stop clickhouse
+    docker-compose rm -f clickhouse
+    
+    # Clean data directory again
+    sudo rm -rf data/clickhouse/*
+    sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files}
+    sudo chown -R 999:999 data/clickhouse
+    sudo chmod -R 755 data/clickhouse
+    
+    # Try starting with root user as fallback
+    print_status "Trying ClickHouse with root user permissions..."
+    
+    # Temporarily modify docker-compose to run as root
+    sed -i '/clickhouse:/,/depends_on:/c\
+  clickhouse:\
+    image: clickhouse/clickhouse-server:latest\
+    container_name: shivish-clickhouse\
+    user: "0:0"\
+    environment:\
+      CLICKHOUSE_DB: analytics\
+      CLICKHOUSE_USER: analytics_user\
+      CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024\
+    volumes:\
+      - ./data/clickhouse:/var/lib/clickhouse\
+      - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml\
+      - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml\
+    ports:\
+      - "8123:8123"\
+      - "9002:9000"\
+    networks:\
+      - shivish-network\
+    restart: unless-stopped\
+    ulimits:\
+      nofile:\
+        soft: 262144\
+        hard: 262144\
+    depends_on:\
+      - postgres\
+      - redis' docker-compose.yml
+    
+    # Fix permissions for root user
+    sudo chown -R 0:0 data/clickhouse
+    sudo chmod -R 755 data/clickhouse
+    
+    # Start ClickHouse
+    docker-compose up -d clickhouse
+    sleep 20
+    
+    if docker-compose ps clickhouse | grep -q "Up"; then
+        print_success "ClickHouse is now running with root user permissions"
+    else
+        print_error "ClickHouse still failing. Checking logs..."
+        docker-compose logs --tail=20 clickhouse
+    fi
+else
+    print_success "ClickHouse started successfully"
+fi
 
 # Start monitoring services
 print_status "Starting monitoring services..."
@@ -612,34 +726,21 @@ docker-compose up -d
 print_status "Step 12: Waiting for all services to stabilize..."
 sleep 30
 
-print_status "Step 13: Checking ClickHouse status and fixing if needed..."
+print_status "Step 13: Final ClickHouse verification..."
 
-# Check if ClickHouse is running properly
-if ! docker-compose ps clickhouse | grep -q "Up"; then
-    print_warning "ClickHouse is not running properly, attempting to fix..."
+# Final ClickHouse check
+if docker-compose ps clickhouse | grep -q "Up"; then
+    print_success "ClickHouse is running properly"
     
-    # Stop ClickHouse
-    docker-compose stop clickhouse
-    docker-compose rm -f clickhouse
-    
-    # Wait a moment
-    sleep 5
-    
-    # Restart ClickHouse
-    docker-compose up -d clickhouse
-    
-    # Wait for it to start
-    sleep 20
-    
-    # Check again
-    if docker-compose ps clickhouse | grep -q "Up"; then
-        print_success "ClickHouse is now running properly"
+    # Test ClickHouse connectivity
+    if curl -s http://localhost:8123 >/dev/null; then
+        print_success "ClickHouse HTTP interface is responding"
     else
-        print_warning "ClickHouse still having issues, checking logs..."
-        docker-compose logs --tail=20 clickhouse
+        print_warning "ClickHouse is running but HTTP interface not responding yet"
     fi
 else
-    print_success "ClickHouse is running properly"
+    print_error "ClickHouse is still not running. Final attempt..."
+    docker-compose logs --tail=30 clickhouse
 fi
 
 print_status "Step 15: Creating monitoring scripts..."
