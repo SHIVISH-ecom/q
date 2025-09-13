@@ -159,6 +159,7 @@ cat > configs/clickhouse/config.xml << 'EOF'
     <http_port>8123</http_port>
     <tcp_port>9000</tcp_port>
     <listen_host>0.0.0.0</listen_host>
+    <listen_host>::</listen_host>
 
     <max_connections>4096</max_connections>
     <keep_alive_timeout>3</keep_alive_timeout>
@@ -424,6 +425,12 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       - postgres
       - redis
@@ -694,6 +701,12 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       - postgres
       - redis
@@ -777,11 +790,49 @@ print_status "Step 13: Final ClickHouse verification..."
 if docker-compose ps clickhouse | grep -q "Up"; then
     print_success "ClickHouse is running properly"
     
-    # Test ClickHouse connectivity
+    # Test ClickHouse connectivity with detailed diagnostics
+    print_status "Testing ClickHouse HTTP interface..."
+    
+    # Test basic connectivity
     if curl -s http://localhost:8123 >/dev/null; then
         print_success "ClickHouse HTTP interface is responding"
     else
-        print_warning "ClickHouse is running but HTTP interface not responding yet"
+        print_warning "ClickHouse HTTP interface not responding. Running diagnostics..."
+        
+        # Check if port is listening
+        if netstat -tulpn 2>/dev/null | grep -q ":8123 "; then
+            print_status "Port 8123 is listening, but ClickHouse not responding"
+        else
+            print_warning "Port 8123 is not listening"
+        fi
+        
+        # Check ClickHouse logs for errors
+        print_status "Checking ClickHouse logs for errors..."
+        docker-compose logs --tail=20 clickhouse | grep -i error || print_status "No obvious errors in recent logs"
+        
+        # Test with ping endpoint
+        print_status "Testing ClickHouse ping endpoint..."
+        if curl -s http://localhost:8123/ping 2>/dev/null | grep -q "Ok"; then
+            print_success "ClickHouse ping endpoint responding"
+        else
+            print_warning "ClickHouse ping endpoint not responding"
+        fi
+        
+        # Check container internal status
+        print_status "Checking ClickHouse container internal status..."
+        docker exec shivish-clickhouse ps aux | grep clickhouse || print_warning "ClickHouse process not found in container"
+        
+        # Try to restart ClickHouse
+        print_status "Attempting to restart ClickHouse..."
+        docker-compose restart clickhouse
+        sleep 15
+        
+        # Test again after restart
+        if curl -s http://localhost:8123 >/dev/null; then
+            print_success "ClickHouse HTTP interface is now responding after restart"
+        else
+            print_error "ClickHouse HTTP interface still not responding after restart"
+        fi
     fi
 else
     print_error "ClickHouse is still not running. Final attempt..."
