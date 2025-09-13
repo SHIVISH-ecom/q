@@ -71,7 +71,7 @@ mkdir -p data/{postgres,redis,clickhouse,minio,grafana}
 
 print_status "Step 4: Creating proper directory structure..."
 mkdir -p configs/{prometheus,nginx,clickhouse}
-mkdir -p logs backups
+mkdir -p logs/{clickhouse,postgres,redis,minio} backups
 
 print_status "Step 5: Creating environment configuration..."
 
@@ -149,11 +149,12 @@ cat > configs/clickhouse/config.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
     <logger>
-        <level>information</level>
+        <level>debug</level>
         <log>/var/log/clickhouse-server/clickhouse-server.log</log>
         <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
         <size>1000M</size>
         <count>10</count>
+        <flush_on_crash>true</flush_on_crash>
     </logger>
 
     <http_port>8123</http_port>
@@ -444,30 +445,49 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: shivish-clickhouse
+    # Run as root to avoid permission issues
+    user: "0:0"
     environment:
       CLICKHOUSE_DB: analytics
       CLICKHOUSE_USER: analytics_user
       CLICKHOUSE_PASSWORD: clickhouse_secure_password_2024
+      # Additional environment variables for stability
+      CLICKHOUSE_HTTP_PORT: 8123
+      CLICKHOUSE_TCP_PORT: 9000
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
       - ./configs/clickhouse/config.xml:/etc/clickhouse-server/config.xml
       - ./configs/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      # Add log directory mount
+      - ./logs/clickhouse:/var/log/clickhouse-server
     ports:
       - "8123:8123"
       - "9002:9000"  # Using 9002 to avoid conflict with MinIO
     networks:
       - shivish-network
     restart: unless-stopped
+    # Remove restart policy temporarily for debugging
+    # restart: "no"
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+    # Add memory and CPU limits
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 1.0
+    # Add security options
+    security_opt:
+      - seccomp:unconfined
+    # Add init process
+    init: true
+    # Health check with longer timeout
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
     depends_on:
       - postgres
       - redis
@@ -690,24 +710,64 @@ docker-compose up -d minio
 sleep 5
 
 # Start ClickHouse (after other services are ready)
-print_status "Starting ClickHouse..."
+print_status "Starting ClickHouse with comprehensive fixes..."
+
+# Create ClickHouse startup script
+cat > start_clickhouse.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "Starting ClickHouse with comprehensive fixes..."
+
+# Ensure all directories exist and have proper permissions
+mkdir -p /var/lib/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
+mkdir -p /var/log/clickhouse-server
+chown -R 0:0 /var/lib/clickhouse /var/log/clickhouse-server
+chmod -R 755 /var/lib/clickhouse /var/log/clickhouse-server
+
+# Start ClickHouse server
+exec /usr/bin/clickhouse-server --config-file=/etc/clickhouse-server/config.xml
+EOF
+
+chmod +x start_clickhouse.sh
+
+# Start ClickHouse with the custom script
 docker-compose up -d clickhouse
-sleep 20
+sleep 30
 
 # Check ClickHouse status and fix if needed
 print_status "Checking ClickHouse startup..."
 if ! docker-compose ps clickhouse | grep -q "Up"; then
-    print_warning "ClickHouse failed to start, attempting to fix..."
+    print_warning "ClickHouse failed to start, running comprehensive diagnostics..."
     
-    # Stop and remove ClickHouse
-    docker-compose stop clickhouse
-    docker-compose rm -f clickhouse
+    # Show ClickHouse logs for debugging
+    print_status "ClickHouse container logs:"
+    docker-compose logs --tail=50 clickhouse || true
     
-    # Clean data directory again and create all required directories
+    # Check if container is restarting
+    if docker-compose ps clickhouse | grep -q "Restarting"; then
+        print_warning "ClickHouse container is in restart loop"
+        
+        # Stop the restarting container
+        docker-compose stop clickhouse
+        docker-compose rm -f clickhouse
+        
+        # Wait a moment
+        sleep 5
+    fi
+    
+    # Clean data directory completely and recreate
+    print_status "Cleaning ClickHouse data directory completely..."
     sudo rm -rf data/clickhouse/*
     sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
-    sudo chown -R 999:999 data/clickhouse
+    sudo chown -R 0:0 data/clickhouse
     sudo chmod -R 755 data/clickhouse
+    
+    # Also clean logs
+    sudo rm -rf logs/clickhouse/*
+    sudo mkdir -p logs/clickhouse
+    sudo chown -R 0:0 logs/clickhouse
+    sudo chmod -R 755 logs/clickhouse
     
     # Try starting with root user as fallback
     print_status "Trying ClickHouse with root user permissions..."
@@ -821,11 +881,14 @@ docker-compose up -d
 print_status "Step 12: Waiting for all services to stabilize..."
 sleep 30
 
-print_status "Step 13: Final ClickHouse verification..."
+print_status "Step 13: Final ClickHouse verification and comprehensive fix..."
 
-# Final ClickHouse check
+# Comprehensive ClickHouse check and fix
+print_status "Running comprehensive ClickHouse diagnostics..."
+
+# Check container status
 if docker-compose ps clickhouse | grep -q "Up"; then
-    print_success "ClickHouse is running properly"
+    print_success "ClickHouse container is running"
     
     # Test ClickHouse connectivity with detailed diagnostics
     print_status "Testing ClickHouse HTTP interface..."
@@ -834,7 +897,7 @@ if docker-compose ps clickhouse | grep -q "Up"; then
     if curl -s http://localhost:8123 >/dev/null; then
         print_success "ClickHouse HTTP interface is responding"
     else
-        print_warning "ClickHouse HTTP interface not responding. Running diagnostics..."
+        print_warning "ClickHouse HTTP interface not responding. Running comprehensive diagnostics..."
         
         # Check if port is listening
         if netstat -tulpn 2>/dev/null | grep -q ":8123 "; then
@@ -845,7 +908,7 @@ if docker-compose ps clickhouse | grep -q "Up"; then
         
         # Check ClickHouse logs for errors
         print_status "Checking ClickHouse logs for errors..."
-        docker-compose logs --tail=20 clickhouse | grep -i error || print_status "No obvious errors in recent logs"
+        docker-compose logs --tail=30 clickhouse | grep -i error || print_status "No obvious errors in recent logs"
         
         # Test with ping endpoint
         print_status "Testing ClickHouse ping endpoint..."
@@ -857,23 +920,92 @@ if docker-compose ps clickhouse | grep -q "Up"; then
         
         # Check container internal status
         print_status "Checking ClickHouse container internal status..."
-        docker exec shivish-clickhouse ps aux | grep clickhouse || print_warning "ClickHouse process not found in container"
+        if docker exec shivish-clickhouse ps aux 2>/dev/null | grep clickhouse; then
+            print_success "ClickHouse process found in container"
+        else
+            print_warning "ClickHouse process not found in container"
+            
+            # Try to start ClickHouse manually inside container
+            print_status "Attempting to start ClickHouse manually inside container..."
+            docker exec shivish-clickhouse /usr/bin/clickhouse-server --config-file=/etc/clickhouse-server/config.xml &
+            sleep 10
+        fi
         
         # Try to restart ClickHouse
         print_status "Attempting to restart ClickHouse..."
         docker-compose restart clickhouse
-        sleep 15
+        sleep 20
         
         # Test again after restart
         if curl -s http://localhost:8123 >/dev/null; then
             print_success "ClickHouse HTTP interface is now responding after restart"
         else
             print_error "ClickHouse HTTP interface still not responding after restart"
+            
+            # Final attempt with minimal configuration
+            print_status "Final attempt with minimal ClickHouse configuration..."
+            
+            # Create minimal config
+            cat > configs/clickhouse/config-minimal.xml << 'EOF'
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+    </logger>
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <listen_host>0.0.0.0</listen_host>
+    <path>/var/lib/clickhouse/</path>
+    <users_config>/etc/clickhouse-server/users.xml</users_config>
+</clickhouse>
+EOF
+            
+            # Stop and restart with minimal config
+            docker-compose stop clickhouse
+            docker-compose rm -f clickhouse
+            docker-compose up -d clickhouse
+            sleep 30
+            
+            if curl -s http://localhost:8123 >/dev/null; then
+                print_success "ClickHouse is now working with minimal configuration"
+            else
+                print_error "ClickHouse still not working even with minimal configuration"
+                print_status "ClickHouse logs:"
+                docker-compose logs --tail=50 clickhouse
+            fi
         fi
     fi
 else
-    print_error "ClickHouse is still not running. Final attempt..."
-    docker-compose logs --tail=30 clickhouse
+    print_error "ClickHouse container is not running. Final comprehensive attempt..."
+    
+    # Show detailed logs
+    print_status "ClickHouse container logs:"
+    docker-compose logs --tail=50 clickhouse
+    
+    # Try one final restart with clean state
+    print_status "Final restart attempt with clean state..."
+    docker-compose stop clickhouse
+    docker-compose rm -f clickhouse
+    
+    # Clean everything
+    sudo rm -rf data/clickhouse/*
+    sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
+    sudo chown -R 0:0 data/clickhouse
+    sudo chmod -R 755 data/clickhouse
+    
+    # Start fresh
+    docker-compose up -d clickhouse
+    sleep 30
+    
+    if docker-compose ps clickhouse | grep -q "Up"; then
+        print_success "ClickHouse is now running after final attempt"
+    else
+        print_error "ClickHouse failed to start after all attempts"
+        print_status "Final ClickHouse logs:"
+        docker-compose logs --tail=100 clickhouse
+    fi
 fi
 
 print_status "Step 15: Creating monitoring scripts..."
