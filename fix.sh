@@ -126,18 +126,18 @@ TWILIO_PHONE_NUMBER=your_twilio_phone
 # Grafana Configuration
 GRAFANA_PASSWORD=shivish_grafana_password_2024
 
-# API Gateway Configuration
-API_GATEWAY_PORT=8080
-AUTH_SERVICE_PORT=8081
-USER_SERVICE_PORT=8082
-ECOMMERCE_SERVICE_PORT=8083
-PAYMENT_SERVICE_PORT=8084
-NOTIFICATION_SERVICE_PORT=8085
-CONTENT_SERVICE_PORT=8086
-ANALYTICS_SERVICE_PORT=8087
-VERIFICATION_SERVICE_PORT=8088
-EMERGENCY_SERVICE_PORT=8089
-TEMPLE_SERVICE_PORT=8090
+# API Gateway Configuration (matching microservices/docker-compose.yml)
+API_GATEWAY_PORT=8081
+AUTH_SERVICE_PORT=8080
+USER_SERVICE_PORT=8098
+ECOMMERCE_SERVICE_PORT=8082
+PAYMENT_SERVICE_PORT=8091
+NOTIFICATION_SERVICE_PORT=8092
+CONTENT_SERVICE_PORT=8093
+ANALYTICS_SERVICE_PORT=8094
+VERIFICATION_SERVICE_PORT=8095
+EMERGENCY_SERVICE_PORT=8096
+TEMPLE_SERVICE_PORT=8097
 EOF
 
 print_success "Environment configuration created"
@@ -384,6 +384,9 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    depends_on:
+      - postgres
+      - redis
 
   minio:
     image: minio/minio:latest
@@ -442,11 +445,12 @@ services:
     restart: unless-stopped
 
   # Microservices (Placeholder - you'll need to build these)
+  # Ports match microservices/docker-compose.yml to avoid conflicts
   api-gateway:
     image: nginx:alpine
     container_name: shivish-api-gateway
     ports:
-      - "8080:8080"
+      - "8081:8080"  # External 8081 -> Internal 8080
     networks:
       - shivish-network
     restart: unless-stopped
@@ -456,7 +460,7 @@ services:
     image: nginx:alpine
     container_name: shivish-auth-service
     ports:
-      - "8081:8081"
+      - "8080:8080"  # External 8080 -> Internal 8080
     networks:
       - shivish-network
     restart: unless-stopped
@@ -466,17 +470,37 @@ services:
     image: nginx:alpine
     container_name: shivish-ecommerce-service
     ports:
-      - "8082:8082"
+      - "8082:8081"  # External 8082 -> Internal 8081
     networks:
       - shivish-network
     restart: unless-stopped
     # TODO: Replace with actual E-commerce Service
 
+  payment-service:
+    image: nginx:alpine
+    container_name: shivish-payment-service
+    ports:
+      - "8091:8091"  # External 8091 -> Internal 8091
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Payment Service
+
+  notification-service:
+    image: nginx:alpine
+    container_name: shivish-notification-service
+    ports:
+      - "8092:8092"  # External 8092 -> Internal 8092
+    networks:
+      - shivish-network
+    restart: unless-stopped
+    # TODO: Replace with actual Notification Service
+
   content-service:
     image: nginx:alpine
     container_name: shivish-content-service
     ports:
-      - "8084:8084"
+      - "8093:8093"  # External 8093 -> Internal 8093
     networks:
       - shivish-network
     restart: unless-stopped
@@ -486,7 +510,7 @@ services:
     image: nginx:alpine
     container_name: shivish-analytics-service
     ports:
-      - "8085:8085"
+      - "8094:8094"  # External 8094 -> Internal 8094
     networks:
       - shivish-network
     restart: unless-stopped
@@ -496,7 +520,7 @@ services:
     image: nginx:alpine
     container_name: shivish-verification-service
     ports:
-      - "8086:8086"
+      - "8095:8095"  # External 8095 -> Internal 8095
     networks:
       - shivish-network
     restart: unless-stopped
@@ -506,7 +530,7 @@ services:
     image: nginx:alpine
     container_name: shivish-emergency-service
     ports:
-      - "8087:8087"
+      - "8096:8096"  # External 8096 -> Internal 8096
     networks:
       - shivish-network
     restart: unless-stopped
@@ -516,7 +540,7 @@ services:
     image: nginx:alpine
     container_name: shivish-temple-service
     ports:
-      - "8088:8088"
+      - "8097:8097"  # External 8097 -> Internal 8097
     networks:
       - shivish-network
     restart: unless-stopped
@@ -526,7 +550,7 @@ services:
     image: nginx:alpine
     container_name: shivish-user-service
     ports:
-      - "8089:8089"
+      - "8098:8098"  # External 8098 -> Internal 8098
     networks:
       - shivish-network
     restart: unless-stopped
@@ -554,17 +578,69 @@ sudo chown -R 1001:1001 data/minio
 
 print_success "Permissions set"
 
-print_status "Step 11: Starting core services first..."
-docker-compose up -d postgres redis clickhouse minio
+print_status "Step 11: Starting core services in correct order..."
 
-print_status "Step 12: Waiting for core services to be ready..."
-sleep 30
+# Start PostgreSQL first
+print_status "Starting PostgreSQL..."
+docker-compose up -d postgres
+sleep 10
 
-print_status "Step 13: Starting all services..."
+# Start Redis
+print_status "Starting Redis..."
+docker-compose up -d redis
+sleep 5
+
+# Start MinIO
+print_status "Starting MinIO..."
+docker-compose up -d minio
+sleep 5
+
+# Start ClickHouse (after other services are ready)
+print_status "Starting ClickHouse..."
+docker-compose up -d clickhouse
+sleep 15
+
+# Start monitoring services
+print_status "Starting monitoring services..."
+docker-compose up -d prometheus grafana
+sleep 10
+
+# Start microservices
+print_status "Starting microservices..."
 docker-compose up -d
 
-print_status "Step 14: Waiting for all services to start..."
+print_status "Step 12: Waiting for all services to stabilize..."
 sleep 30
+
+print_status "Step 13: Checking ClickHouse status and fixing if needed..."
+
+# Check if ClickHouse is running properly
+if ! docker-compose ps clickhouse | grep -q "Up"; then
+    print_warning "ClickHouse is not running properly, attempting to fix..."
+    
+    # Stop ClickHouse
+    docker-compose stop clickhouse
+    docker-compose rm -f clickhouse
+    
+    # Wait a moment
+    sleep 5
+    
+    # Restart ClickHouse
+    docker-compose up -d clickhouse
+    
+    # Wait for it to start
+    sleep 20
+    
+    # Check again
+    if docker-compose ps clickhouse | grep -q "Up"; then
+        print_success "ClickHouse is now running properly"
+    else
+        print_warning "ClickHouse still having issues, checking logs..."
+        docker-compose logs --tail=20 clickhouse
+    fi
+else
+    print_success "ClickHouse is running properly"
+fi
 
 print_status "Step 15: Creating monitoring scripts..."
 
@@ -589,16 +665,18 @@ docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsa
 
 echo ""
 echo "🔍 Service Health:"
-# Test actual endpoints instead of /health
-curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
-curl -s http://localhost:8081/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
+# Test actual endpoints with correct ports (matching microservices/docker-compose.yml)
+curl -s http://localhost:8080/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
+curl -s http://localhost:8081/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
 curl -s http://localhost:8082/ >/dev/null && echo "✅ E-commerce Service: OK" || echo "❌ E-commerce Service: DOWN"
-curl -s http://localhost:8084/ >/dev/null && echo "✅ Content Service: OK" || echo "❌ Content Service: DOWN"
-curl -s http://localhost:8085/ >/dev/null && echo "✅ Analytics Service: OK" || echo "❌ Analytics Service: DOWN"
-curl -s http://localhost:8086/ >/dev/null && echo "✅ Verification Service: OK" || echo "❌ Verification Service: DOWN"
-curl -s http://localhost:8087/ >/dev/null && echo "✅ Emergency Service: OK" || echo "❌ Emergency Service: DOWN"
-curl -s http://localhost:8088/ >/dev/null && echo "✅ Temple Service: OK" || echo "❌ Temple Service: DOWN"
-curl -s http://localhost:8089/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
+curl -s http://localhost:8091/ >/dev/null && echo "✅ Payment Service: OK" || echo "❌ Payment Service: DOWN"
+curl -s http://localhost:8092/ >/dev/null && echo "✅ Notification Service: OK" || echo "❌ Notification Service: DOWN"
+curl -s http://localhost:8093/ >/dev/null && echo "✅ Content Service: OK" || echo "❌ Content Service: DOWN"
+curl -s http://localhost:8094/ >/dev/null && echo "✅ Analytics Service: OK" || echo "❌ Analytics Service: DOWN"
+curl -s http://localhost:8095/ >/dev/null && echo "✅ Verification Service: OK" || echo "❌ Verification Service: DOWN"
+curl -s http://localhost:8096/ >/dev/null && echo "✅ Emergency Service: OK" || echo "❌ Emergency Service: DOWN"
+curl -s http://localhost:8097/ >/dev/null && echo "✅ Temple Service: OK" || echo "❌ Temple Service: DOWN"
+curl -s http://localhost:8098/ >/dev/null && echo "✅ User Service: OK" || echo "❌ User Service: DOWN"
 
 echo ""
 echo "🌐 Core Services:"
@@ -677,8 +755,11 @@ sudo netstat -tulpn | grep -E ":(8080|8081|8082|3000|9000|9001|8123|9090)" || ec
 
 echo ""
 echo "🧪 Testing services..."
+echo "Testing Auth Service..."
+curl -s http://localhost:8080/ >/dev/null && echo "✅ Auth Service: OK" || echo "❌ Auth Service: DOWN"
+
 echo "Testing API Gateway..."
-curl -s http://localhost:8080/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
+curl -s http://localhost:8081/ >/dev/null && echo "✅ API Gateway: OK" || echo "❌ API Gateway: DOWN"
 
 echo "Testing Grafana..."
 curl -s http://localhost:3000 >/dev/null && echo "✅ Grafana: OK" || echo "❌ Grafana: DOWN"
@@ -687,7 +768,13 @@ echo "Testing MinIO Console..."
 curl -s http://localhost:9001 >/dev/null && echo "✅ MinIO Console: OK" || echo "❌ MinIO Console: DOWN"
 
 echo "Testing ClickHouse..."
-curl -s http://localhost:8123 >/dev/null && echo "✅ ClickHouse: OK" || echo "❌ ClickHouse: DOWN"
+if curl -s http://localhost:8123 >/dev/null; then
+    echo "✅ ClickHouse: OK"
+else
+    echo "❌ ClickHouse: DOWN"
+    echo "Checking ClickHouse logs..."
+    docker-compose logs --tail=10 clickhouse
+fi
 
 echo "Testing Prometheus..."
 curl -s http://localhost:9090 >/dev/null && echo "✅ Prometheus: OK" || echo "❌ Prometheus: DOWN"
@@ -704,7 +791,7 @@ echo "   - MinIO: 9000 (object storage), 9001 (console)"
 echo "   - ClickHouse: 8123 (HTTP), 9002 (TCP)"
 echo "   - Grafana: 3000"
 echo "   - Prometheus: 9090"
-echo "   - Microservices: 8080-8090"
+echo "   - Microservices: 8080-8098 (matching microservices/docker-compose.yml)"
 echo "✅ All configuration files created"
 echo "✅ Monitoring scripts created"
 echo "✅ All services started"
@@ -723,7 +810,8 @@ echo "=================================================="
 echo "🌐 Access Your Services:"
 echo "=================================================="
 echo ""
-echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8080"
+echo "   - Auth Service: http://$(hostname -I | awk '{print $1}'):8080"
+echo "   - API Gateway: http://$(hostname -I | awk '{print $1}'):8081"
 echo "   - Grafana: http://$(hostname -I | awk '{print $1}'):3000"
 echo "   - MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
 echo "   - Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
