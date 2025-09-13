@@ -144,7 +144,7 @@ print_success "Environment configuration created"
 
 print_status "Step 6: Creating ClickHouse configuration..."
 
-# Create ClickHouse config.xml with stability optimizations
+# Create ClickHouse config.xml with stability optimizations and proper paths
 cat > configs/clickhouse/config.xml << 'EOF'
 <?xml version="1.0"?>
 <clickhouse>
@@ -168,11 +168,22 @@ cat > configs/clickhouse/config.xml << 'EOF'
     <path>/var/lib/clickhouse/</path>
     <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
     <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
 
-    <users_config>users.xml</users_config>
+    <users_config>/etc/clickhouse-server/users.xml</users_config>
     <default_profile>default</default_profile>
     <default_database>default</default_database>
     <timezone>UTC</timezone>
+
+    <!-- User directories configuration -->
+    <user_directories>
+        <users_xml>
+            <path>/etc/clickhouse-server/users.xml</path>
+        </users_xml>
+        <local_directory>
+            <path>/var/lib/clickhouse/access/</path>
+        </local_directory>
+    </user_directories>
 
     <!-- Memory optimization settings to prevent restart loops -->
     <max_memory_usage>2000000000</max_memory_usage>
@@ -261,6 +272,32 @@ cat > configs/clickhouse/users.xml << 'EOF'
 EOF
 
 print_success "ClickHouse configuration created"
+
+# Verify configuration files are accessible
+print_status "Verifying ClickHouse configuration files..."
+if [ -f "configs/clickhouse/config.xml" ] && [ -f "configs/clickhouse/users.xml" ]; then
+    print_success "ClickHouse configuration files created successfully"
+    
+    # Check XML syntax
+    if command -v xmllint >/dev/null 2>&1; then
+        if xmllint --noout configs/clickhouse/config.xml 2>/dev/null; then
+            print_success "ClickHouse config.xml syntax is valid"
+        else
+            print_warning "ClickHouse config.xml has syntax errors"
+        fi
+        
+        if xmllint --noout configs/clickhouse/users.xml 2>/dev/null; then
+            print_success "ClickHouse users.xml syntax is valid"
+        else
+            print_warning "ClickHouse users.xml has syntax errors"
+        fi
+    else
+        print_warning "xmllint not available, skipping XML validation"
+    fi
+else
+    print_error "ClickHouse configuration files not found!"
+    exit 1
+fi
 
 print_status "Step 7: Creating Prometheus configuration..."
 
@@ -622,7 +659,7 @@ print_status "Step 10: Setting proper permissions and cleaning ClickHouse data..
 # Clean ClickHouse data directory to prevent corruption issues
 print_status "Cleaning ClickHouse data directory..."
 sudo rm -rf data/clickhouse/* 2>/dev/null || true
-sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files}
+sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
 
 # Set proper permissions for all services
 sudo chown -R 999:999 data/postgres
@@ -666,9 +703,9 @@ if ! docker-compose ps clickhouse | grep -q "Up"; then
     docker-compose stop clickhouse
     docker-compose rm -f clickhouse
     
-    # Clean data directory again
+    # Clean data directory again and create all required directories
     sudo rm -rf data/clickhouse/*
-    sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files}
+    sudo mkdir -p data/clickhouse/{data,metadata,tmp,user_files,format_schemas,access}
     sudo chown -R 999:999 data/clickhouse
     sudo chmod -R 755 data/clickhouse
     
